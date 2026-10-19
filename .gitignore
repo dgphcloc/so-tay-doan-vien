@@ -1,0 +1,7 @@
+node_modules
+dist
+server.js
+
+# Biến môi trường chứa cấu hình thật — KHÔNG commit
+.env.local
+.env.*.local

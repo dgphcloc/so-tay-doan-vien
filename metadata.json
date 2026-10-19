@@ -1,0 +1,6 @@
+{
+  "name": "Sổ tay Đoàn viên – Quản trị",
+  "description": "Hệ thống quản trị số hoá công tác Đoàn Thanh niên cấp xã - Sổ tay Đoàn viên điện tử",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
