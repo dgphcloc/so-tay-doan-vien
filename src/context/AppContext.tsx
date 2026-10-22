@@ -208,6 +208,7 @@ interface AppContextType {
 
   // Quản lý Nhắc nhở qua Repository
   resolveWarning: (warningId: string) => Promise<void>;
+  syncWarnings: () => Promise<{ created: number }>;
   sendManualReminder: (payload: {
     recipientType: 'unit' | 'type' | 'units' | 'member';
     unitId?: string;
@@ -774,6 +775,15 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     [refreshData]
   );
 
+  const syncWarnings = useCallback(
+    async () => {
+      const res = await repository.syncWarnings();
+      if (res.created > 0) await refreshData();
+      return res;
+    },
+    [refreshData]
+  );
+
   const sendManualReminder = useCallback(
     async (payload: any) => {
       const res = await repository.sendNotification(payload);
@@ -1233,6 +1243,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     importCriteriaTree,
     setActiveCriteriaSet,
     resolveWarning,
+    syncWarnings,
     sendManualReminder,
     updateUnit,
     deactivateUnit,

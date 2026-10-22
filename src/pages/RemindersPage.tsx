@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
 import {
   BellRing,
@@ -46,11 +46,23 @@ export const RemindersPage: React.FC = () => {
     taskUnits,
     taskResults,
     resolveWarning,
+    syncWarnings,
     sendManualReminder,
     getUnitById,
     getTaskById,
     showToast,
   } = useApp();
+
+  // Mở trang là tự sinh cảnh báo quá hạn / sắp hết hạn (nếu có cảnh báo mới)
+  useEffect(() => {
+    (async () => {
+      const res = await syncWarnings();
+      if (res.created > 0) {
+        showToast({ title: `Đã cập nhật ${res.created} cảnh báo mới`, type: 'info' });
+      }
+    })();
+    /* eslint-disable-next-line */
+  }, []);
 
   // Active top tab: "Danh sách nhắc nhở" | "Cần nhắc hôm nay"
   const [activeTab, setActiveTab] = useState<'all' | 'due_today' | 'open_warnings'>('all');

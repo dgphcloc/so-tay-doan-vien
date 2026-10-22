@@ -505,3 +505,61 @@ Từ "bảng chấm điểm" → **"danh mục phân loại nhiệm vụ"**. M�
 ### Lưu ý
 - Vẫn còn mã liên quan tự chấm ở tầng repository (`submitCriterionSubmission`, `approve('criterion', ...)`) — giữ để không phá dữ liệu cũ, nhưng không còn đường vào từ giao diện.
 - Thanh lọc ở trang Duyệt giờ chỉ hiện ở tab "Bài đoàn viên", đúng như yêu cầu.
+
+---
+
+## 20. Module thống kê + sửa số liệu sai (2026-10-19)
+
+### #1. Tab "Thống kê Nhân sự" (mới)
+
+4 thẻ tổng quan + 4 khối chi tiết:
+
+| Khối | Nội dung |
+|---|---|
+| Tổng quan | Tổng ĐV • Chi đoàn hoạt động • Sắp trưởng thành 12 tháng • Chi đoàn thiếu bí thư |
+| Phân bố độ tuổi | Biểu đồ cột 4 nhóm (<18, 18–25, 26–30, >30) |
+| Kết nạp theo tháng | Biểu đồ đường 12 tháng gần nhất |
+| **Sắp trưởng thành** | Bảng chi tiết + chip màu theo số tháng còn lại + xuất Excel |
+| Chi đoàn thiếu bí thư | Danh sách chi đoàn không có `current_position = 'secretary'` |
+| Chênh lệch quân số | Top 10 chi đoàn lệch nhiều nhất giữa khai báo và thực tế |
+
+Tính trong `personnelStats` (dùng `members`, `units`, `yearlySettings.matured_age`).
+
+### #2. Sửa `overdueUnitsCount` / `dueSoon7DaysCount` trả cứng 0
+
+`supabaseRepository.getDashboard` nay tính thật:
+- **Chi đoàn trễ hạn** = số chi đoàn được giao nhiệm vụ đã quá hạn mà chưa có `task_results` (hoặc bị từ chối)
+- **Sắp hết hạn 7 ngày** = nhiệm vụ `published` có `due_date` trong khoảng hôm nay → +7 ngày
+
+### #3. Bảng `warnings` — thêm `syncWarnings()`
+
+Trước đây bảng luôn rỗng vì không có lệnh insert nào. Nay `syncWarnings()`:
+- Quét nhiệm vụ `published` quá hạn hoặc còn ≤3 ngày
+- Với mỗi chi đoàn chưa nộp → tạo cảnh báo `OVERDUE` (đỏ) hoặc `DUE_SOON` (vàng/cam)
+- **Idempotent**: mỗi cặp (chi đoàn, nhiệm vụ, mã) chỉ có tối đa một cảnh báo đang mở
+- Gọi tự động khi mở trang **Nhắc nhở**, báo toast nếu có cảnh báo mới
+
+### #4. Tab "Mức độ Tham gia" (mới)
+
+| Khối | Nội dung |
+|---|---|
+| Tổng quan | Lượt bấm tham gia • Lượt nộp bài • **Tham gia nhưng không nộp** • Chưa từng tham gia |
+| Cảnh báo khoảng cách ý định–hành động | Hiện khi số bấm tham gia > số nộp thật |
+| Bảng theo chi đoàn | Tỷ lệ đoàn viên có tham gia, số lượt bấm/nộp/duyệt, thanh tỷ lệ màu; xuất Excel |
+| Top đoàn viên tích cực | Top 10 theo số bài được duyệt |
+| Chưa từng tham gia | Danh sách + xuất Excel để đôn đốc |
+
+### #5. Báo cáo định kỳ — số liệu thật
+
+`handlePublishReport` nay đóng gói số liệu **trong kỳ** (`period_start` → `period_end`):
+- Số nhiệm vụ trong kỳ, bài nộp/duyệt/chờ/từ chối, bài cá nhân, lượt tham gia, đoàn viên mới, tỷ lệ duyệt
+- `byUnit`: bảng chi tiết từng chi đoàn (nộp/duyệt/lượt ĐV)
+- `personnel`: nhóm tuổi, số sắp trưởng thành, chi đoàn thiếu bí thư
+- `participation`: tổng hợp tham gia
+
+Modal chi tiết báo cáo hiển thị thật các số này (trước đây là câu cứng "31 chi đoàn").
+
+### Còn chưa làm
+- `updateTask` vẫn không ghi DB (chưa có nút sửa nhiệm vụ trên UI)
+- Gửi nhắc theo lịch hẹn vẫn chỉ lưu state, không có cron
+- Xuất Word (.docx) chưa hỗ trợ

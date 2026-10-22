@@ -1309,6 +1309,9 @@ export class MockRepository implements Repository {
     });
   }
 
+  async syncWarnings(): Promise<{ created: number }> {
+    return { created: 0 };
+  }
   async resolveWarning(warningId: string): Promise<{ success: boolean }> {
     const w = this.warnings.find(item => item.id === warningId);
     if (w) {

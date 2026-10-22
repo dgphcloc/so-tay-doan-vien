@@ -408,6 +408,8 @@ export interface Repository {
     }>
   >;
   resolveWarning(warningId: string): Promise<{ success: boolean }>;
+  /** Sinh cảnh báo quá hạn / sắp hết hạn cho các chi đoàn chưa nộp (idempotent). */
+  syncWarnings(): Promise<{ created: number }>;
   sendNotification(input: {
     recipientType: 'unit' | 'type' | 'units' | 'member';
     unitId?: string;

@@ -22,6 +22,9 @@ import {
   Printer,
   Sparkles,
   ClipboardList,
+  AlertTriangle,
+  ShieldAlert,
+  Activity,
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -30,6 +33,9 @@ import {
   Cell,
   BarChart,
   Bar,
+  LineChart,
+  Line,
+  CartesianGrid,
   XAxis,
   YAxis,
   Tooltip,
@@ -39,6 +45,7 @@ import { Report, ReportType } from '../types';
 import { formatDateVN, formatDateTimeVN } from '../mock/data';
 import { exportExcel } from '../utils/exportExcel';
 import { exportPdf } from '../utils/exportPdf';
+import { calculateAge, isMemberMatured } from '../utils/vietnamese';
 
 const RANK_COLORS = {
   excellent: '#10B981', // Xanh lá - Xuất sắc
@@ -56,15 +63,18 @@ export const ReportsPage: React.FC = () => {
     taskResults,
     taskUnits,
     taskSubCriteria,
+    taskRegistrations,
+    memberSubmissions,
     yearlySettings,
     calculateUnitScores,
     createReportSnapshot,
+    getUnitById,
     refreshData,
     showToast,
   } = useApp();
 
-  // Active view: 'reports_list' | 'ranking_dashboard'
-  const [activeTab, setActiveTab] = useState<'reports_list' | 'ranking_dashboard'>('reports_list');
+  // Active view: 'reports_list' | 'ranking_dashboard' | 'personnel'
+  const [activeTab, setActiveTab] = useState<'reports_list' | 'ranking_dashboard' | 'personnel' | 'participation'>('reports_list');
 
   // Stepper Modal "Tạo báo cáo mới"
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
@@ -89,6 +99,132 @@ export const ReportsPage: React.FC = () => {
   // Sắp xếp bảng xếp loại: bấm tiêu đề cột để đổi
   // 'with_criteria' = chỉ đếm nhiệm vụ có gắn tiêu chí (mặc định); 'all' = mọi nhiệm vụ
   const [taskScope, setTaskScope] = useState<'with_criteria' | 'all'>('with_criteria');
+
+  /** Mức độ tham gia của đoàn viên: bấm tham gia so với thực tế nộp bài. */
+  const participationStats = useMemo(() => {
+    const activeMembers = members.filter(m => m.is_active);
+    const regMap = new Map<string, boolean>();
+    for (const r of taskRegistrations) regMap.set(`${r.task_id}_${r.member_id}`, r.is_joining);
+    const subMap = new Set(memberSubmissions.map(s => `${s.task_id}_${s.member_id}`));
+
+    // Theo từng đoàn viên
+    const perMember = activeMembers.map(m => {
+      let joined = 0, submitted = 0, approved = 0;
+      for (const t of tasks) {
+        if (regMap.get(`${t.id}_${m.id}`) === true) joined += 1;
+        if (subMap.has(`${t.id}_${m.id}`)) {
+          submitted += 1;
+          const sub = memberSubmissions.find(x => x.task_id === t.id && x.member_id === m.id);
+          if (sub?.status === 'approved') approved += 1;
+        }
+      }
+      return { member: m, joined, submitted, approved };
+    });
+
+    const totalJoined = perMember.reduce((s, x) => s + x.joined, 0);
+    const totalSubmitted = perMember.reduce((s, x) => s + x.submitted, 0);
+    const neverJoined = perMember.filter(x => x.joined === 0 && x.submitted === 0);
+    const topActive = [...perMember].sort((a, b) => b.approved - a.approved || b.submitted - a.submitted).slice(0, 10);
+
+    // Theo chi đoàn: tỷ lệ tham gia
+    const perUnit = units
+      .filter(u => u.is_active)
+      .map(u => {
+        const inUnit = perMember.filter(x => x.member.unit_id === u.id);
+        const members_count = inUnit.length;
+        const joined = inUnit.reduce((s, x) => s + x.joined, 0);
+        const submitted = inUnit.reduce((s, x) => s + x.submitted, 0);
+        const approved = inUnit.reduce((s, x) => s + x.approved, 0);
+        const active = inUnit.filter(x => x.submitted > 0).length;
+        return {
+          unit: u,
+          members_count,
+          joined,
+          submitted,
+          approved,
+          activeMembers: active,
+          rate: members_count > 0 ? Math.round((active / members_count) * 100) : 0,
+        };
+      })
+      .sort((a, b) => b.rate - a.rate);
+
+    // Tỷ lệ bấm tham gia nhưng không nộp bài
+    const joinButNoSubmit = Math.max(0, totalJoined - totalSubmitted);
+
+    return { perMember, perUnit, neverJoined, topActive, totalJoined, totalSubmitted, joinButNoSubmit };
+  }, [members, tasks, taskRegistrations, memberSubmissions, units]);
+
+  /** Số liệu nhân sự: tính từ members + unitCommittees (có sẵn trong context). */
+  const personnelStats = useMemo(() => {
+    const active = members.filter(m => m.is_active);
+    const today = new Date();
+
+    // Nhóm tuổi
+    const groups = { under18: 0, from18to25: 0, from26to30: 0, over30: 0 };
+    // Trưởng thành trong 12 tháng tới (tuổi sẽ đủ mức trong vòng 1 năm)
+    const upcomingMatured: Array<{ name: string; unit: string; monthsLeft: number }> = [];
+    // Mới kết nạp theo tháng (12 tháng gần nhất)
+    const monthlyJoin: Array<{ month: string; count: number }> = [];
+    for (let i = 11; i >= 0; i--) {
+      const d = new Date(today.getFullYear(), today.getMonth() - i, 1);
+      monthlyJoin.push({ month: `${d.getMonth() + 1}/${d.getFullYear()}`, count: 0 });
+    }
+    const maturedAge = yearlySettings.matured_age ?? 30;
+
+    for (const m of active) {
+      const age = calculateAge(m.birth_date);
+      if (age < 18) groups.under18 += 1;
+      else if (age <= 25) groups.from18to25 += 1;
+      else if (age <= 30) groups.from26to30 += 1;
+      else groups.over30 += 1;
+
+      // Tuổi sau 12 tháng: nếu đủ mức mà hiện tại chưa đủ thì báo trước
+      const birthNext = new Date(m.birth_date);
+      birthNext.setFullYear(birthNext.getFullYear() + maturedAge);
+      const monthsLeft = Math.ceil((birthNext.getTime() - today.getTime()) / (1000 * 60 * 60 * 24 * 30.4375));
+      if (monthsLeft >= 0 && monthsLeft <= 12 && !isMemberMatured(m.birth_date, maturedAge)) {
+        upcomingMatured.push({
+          name: m.full_name,
+          unit: getUnitById(m.unit_id)?.name ?? '',
+          monthsLeft,
+        });
+      }
+
+      if (m.joined_date) {
+        const j = new Date(m.joined_date);
+        const key = `${j.getMonth() + 1}/${j.getFullYear()}`;
+        const slot = monthlyJoin.find(x => x.month === key);
+        if (slot) slot.count += 1;
+      }
+    }
+    upcomingMatured.sort((a, b) => a.monthsLeft - b.monthsLeft);
+
+    // Chi đoàn thiếu bí thư / chênh quân số / đảng viên / theo loại
+    const unitsWithIssues = units
+      .filter(u => u.is_active)
+      .map(u => {
+        const actual = members.filter(m => m.unit_id === u.id && m.is_active);
+        const hasSecretary = actual.some(m => m.current_position === 'secretary');
+        return {
+          unit: u,
+          actual: actual.length,
+          declared: u.union_member_count,
+          mismatch: Math.abs(actual.length - u.union_member_count),
+          hasSecretary,
+          partyCount: actual.filter(m => m.is_party_member).length,
+        };
+      });
+
+    return {
+      total: active.length,
+      groups,
+      upcomingMatured,
+      monthlyJoin,
+      unitsWithIssues,
+      vacantSecretary: unitsWithIssues.filter(x => !x.hasSecretary),
+      mismatchUnits: unitsWithIssues.filter(x => x.mismatch > 0).sort((a, b) => b.mismatch - a.mismatch).slice(0, 10),
+    };
+  }, [members, units, yearlySettings.matured_age]);
 
   // Unit Scores & Rankings Calculation
   const unitScoreList = useMemo(() => {
@@ -240,6 +376,39 @@ export const ReportsPage: React.FC = () => {
 
   // Handle Create Report Submit
   const handlePublishReport = () => {
+    // Chỉ tính trong kỳ báo cáo (period_start → period_end) để số liệu đúng kỳ
+    const from = periodStart ? new Date(periodStart).getTime() : 0;
+    const to = periodEnd ? new Date(periodEnd).getTime() + 86400000 : Number.MAX_SAFE_INTEGER;
+    const inPeriod = (iso: string | undefined | null): boolean => {
+      if (!iso) return false;
+      const t = new Date(iso).getTime();
+      return Number.isFinite(t) && t >= from && t <= to;
+    };
+
+    const tasksInPeriod = tasks.filter(t => inPeriod(t.assigned_at) || inPeriod(t.due_date));
+    const resultsInPeriod = taskResults.filter(r => inPeriod(r.completed_at));
+    const submissionsInPeriod = memberSubmissions.filter(x => inPeriod(x.submitted_at));
+    const membersJoinedInPeriod = members.filter(m => m.is_active && inPeriod(m.joined_date));
+
+    // Chỉ số trong kỳ
+    const submitted = resultsInPeriod.length;
+    const approved = resultsInPeriod.filter(r => r.status === 'approved').length;
+    const pending = resultsInPeriod.filter(r => r.status === 'pending').length;
+    const rejected = resultsInPeriod.filter(r => r.status === 'rejected').length;
+
+    const byUnit = units
+      .map(u => {
+        const rs = resultsInPeriod.filter(r => r.unit_id === u.id);
+        return {
+          unit_name: u.name,
+          assigned: taskUnits.filter(tu => tu.unit_id === u.id && tasksInPeriod.some(t => t.id === tu.task_id)).length,
+          submitted: rs.length,
+          approved: rs.filter(r => r.status === 'approved').length,
+          participants: rs.reduce((sum, r) => sum + (r.participant_count || 0), 0),
+        };
+      })
+      .sort((a, b) => b.approved - a.approved);
+
     const snapshotData = {
       sections: {
         includeTaskProgress,
@@ -247,11 +416,38 @@ export const ReportsPage: React.FC = () => {
         includeMemberDynamics,
         includeUnitRankings,
       },
+      period: {
+        start: periodStart,
+        end: periodEnd,
+        scope_unit_id: reportScope === 'all' ? null : reportScope,
+      },
       summary: {
         totalUnits: units.length,
         totalMembers: members.length,
         publishedTasks: tasks.filter(t => t.status === 'published').length,
         totalApprovedTasks: unitScoreList.reduce((acc, curr) => acc + curr.taskCount, 0),
+        // Số liệu TRONG KỲ
+        taskInPeriod: tasksInPeriod.length,
+        resultSubmitted: submitted,
+        resultApproved: approved,
+        resultPending: pending,
+        resultRejected: rejected,
+        memberSubmissionCount: submissionsInPeriod.length,
+        memberSubmissionApproved: submissionsInPeriod.filter(x => x.status === 'approved').length,
+        newMembersInPeriod: membersJoinedInPeriod.length,
+        totalParticipants: resultsInPeriod.reduce((sum, r) => sum + (r.participant_count || 0), 0),
+        completionRate: submitted > 0 ? Math.round((approved / submitted) * 100) : 0,
+        byUnit,
+      },
+      personnel: {
+        byAgeGroup: personnelStats.groups,
+        upcomingMatured: personnelStats.upcomingMatured.length,
+        vacantSecretaryUnits: personnelStats.vacantSecretary.map(x => x.unit.name),
+      },
+      participation: {
+        joined: participationStats.totalJoined,
+        submitted: participationStats.totalSubmitted,
+        neverJoined: participationStats.neverJoined.length,
       },
     };
 
@@ -322,6 +518,32 @@ export const ReportsPage: React.FC = () => {
         >
           <FileText className="w-4 h-4" />
           <span>Danh sách Báo cáo đã lập ({reports.length})</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab('personnel')}
+          className={`flex items-center gap-2 px-4 py-2.5 text-xs md:text-sm font-bold border-b-2 transition-all cursor-pointer ${
+            activeTab === 'personnel'
+              ? 'border-[#1F5FBF] text-[#1F5FBF]'
+              : 'border-transparent text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          <Users className="w-4 h-4" />
+          <span>Thống kê Nhân sự</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab('participation')}
+          className={`flex items-center gap-2 px-4 py-2.5 text-xs md:text-sm font-bold border-b-2 transition-all cursor-pointer ${
+            activeTab === 'participation'
+              ? 'border-[#1F5FBF] text-[#1F5FBF]'
+              : 'border-transparent text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          <Activity className="w-4 h-4" />
+          <span>Mức độ Tham gia</span>
         </button>
 
         <button
@@ -424,6 +646,398 @@ export const ReportsPage: React.FC = () => {
                   })}
                 </tbody>
               </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TAB MỨC ĐỘ THAM GIA */}
+      {activeTab === 'participation' && (
+        <div className="space-y-5">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {[
+              { label: 'Lượt bấm tham gia', value: participationStats.totalJoined, cls: 'text-emerald-700' },
+              { label: 'Lượt nộp bài thực tế', value: participationStats.totalSubmitted, cls: 'text-[#1F5FBF]' },
+              { label: 'Tham gia nhưng không nộp', value: participationStats.joinButNoSubmit, cls: 'text-amber-700' },
+              { label: 'Đoàn viên chưa từng tham gia', value: participationStats.neverJoined.length, cls: 'text-rose-600' },
+            ].map(x => (
+              <div key={x.label} className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs text-center">
+                <p className={`text-2xl font-extrabold ${x.cls}`}>{x.value}</p>
+                <p className="text-[11px] text-slate-500 mt-0.5">{x.label}</p>
+              </div>
+            ))}
+          </div>
+
+          {participationStats.totalJoined > participationStats.totalSubmitted && (
+            <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-800">
+              <b>Khoảng cách ý định – hành động:</b>{' '}
+              {participationStats.joinButNoSubmit} lượt đoàn viên bấm "Tham gia" nhưng chưa nộp minh chứng.
+              Đây là nhóm cần đôn đốc.
+            </div>
+          )}
+
+          {/* Tỷ lệ tham gia theo chi đoàn */}
+          <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
+            <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+              <div>
+                <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                  <Building2 className="w-4 h-4 text-[#1F5FBF]" />
+                  Tỷ lệ đoàn viên có tham gia theo chi đoàn
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Đoàn viên có ít nhất một bài nộp / tổng đoàn viên đang hoạt động.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={async () => {
+                  await exportExcel({
+                    fileName: `Muc_do_tham_gia_theo_chi_doan_${yearlySettings.year}.xlsx`,
+                    sheetName: 'Tham gia',
+                    title: 'MỨC ĐỘ THAM GIA CỦA ĐOÀN VIÊN THEO CHI ĐOÀN',
+                    columns: [
+                      { header: 'Chi đoàn', key: 'unit', width: 26 },
+                      { header: 'Đoàn viên', key: 'total', width: 11 },
+                      { header: 'Có tham gia', key: 'active', width: 13 },
+                      { header: 'Tỷ lệ', key: 'rate', width: 10 },
+                      { header: 'Lượt bấm tham gia', key: 'joined', width: 18 },
+                      { header: 'Lượt nộp bài', key: 'submitted', width: 14 },
+                      { header: 'Lượt được duyệt', key: 'approved', width: 16 },
+                    ],
+                    rows: participationStats.perUnit.map(x => ({
+                      unit: x.unit.name,
+                      total: x.members_count,
+                      active: x.activeMembers,
+                      rate: `${x.rate}%`,
+                      joined: x.joined,
+                      submitted: x.submitted,
+                      approved: x.approved,
+                    })),
+                  });
+                  showToast({ title: 'Đã xuất file Excel', description: `${participationStats.perUnit.length} chi đoàn.`, type: 'success' });
+                }}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg"
+              >
+                <Download className="w-3.5 h-3.5" /> Xuất Excel
+              </button>
+            </div>
+            <div className="overflow-x-auto max-h-96">
+              <table className="w-full text-xs text-left">
+                <thead className="bg-slate-50 text-slate-700 uppercase font-bold border-b border-slate-200 sticky top-0">
+                  <tr>
+                    <th className="p-3">Chi đoàn</th>
+                    <th className="p-3 text-center">Đoàn viên</th>
+                    <th className="p-3 text-center">Có tham gia</th>
+                    <th className="p-3 text-center">Tỷ lệ</th>
+                    <th className="p-3 text-center">Bấm tham gia</th>
+                    <th className="p-3 text-center">Nộp bài</th>
+                    <th className="p-3 text-center">Được duyệt</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {participationStats.perUnit.map(x => (
+                    <tr key={x.unit.id} className="hover:bg-slate-50">
+                      <td className="p-3 font-semibold text-slate-900">{x.unit.name}</td>
+                      <td className="p-3 text-center text-slate-600">{x.members_count}</td>
+                      <td className="p-3 text-center font-bold text-slate-800">{x.activeMembers}</td>
+                      <td className="p-3 text-center">
+                        <div className="flex items-center gap-2 justify-center">
+                          <div className="w-16 bg-slate-100 h-2 rounded-full overflow-hidden">
+                            <div
+                              className={`h-full rounded-full ${
+                                x.rate >= 70 ? 'bg-emerald-500' : x.rate >= 40 ? 'bg-amber-500' : 'bg-rose-500'
+                              }`}
+                              style={{ width: `${x.rate}%` }}
+                            />
+                          </div>
+                          <span className="font-bold text-slate-700 w-9 text-right">{x.rate}%</span>
+                        </div>
+                      </td>
+                      <td className="p-3 text-center text-emerald-700 font-semibold">{x.joined}</td>
+                      <td className="p-3 text-center text-[#1F5FBF] font-semibold">{x.submitted}</td>
+                      <td className="p-3 text-center text-slate-700">{x.approved}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+            {/* Top đoàn viên tích cực */}
+            <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
+              <div className="p-4 border-b border-slate-100">
+                <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                  <Award className="w-4 h-4 text-amber-500" />
+                  Đoàn viên tích cực nhất
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">Xếp theo số bài nộp được duyệt</p>
+              </div>
+              {participationStats.topActive.length === 0 ? (
+                <p className="p-6 text-center text-slate-400 text-xs">Chưa có dữ liệu.</p>
+              ) : (
+                <div className="divide-y divide-slate-100">
+                  {participationStats.topActive.map((x, i) => (
+                    <div key={x.member.id} className="p-3 flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <span className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0 ${
+                          i < 3 ? 'bg-amber-400 text-slate-900' : 'bg-slate-100 text-slate-600'
+                        }`}>{i + 1}</span>
+                        <div className="min-w-0">
+                          <p className="text-xs font-bold text-slate-900 truncate">{x.member.full_name}</p>
+                          <p className="text-[10px] text-slate-500">{getUnitById(x.member.unit_id)?.name ?? ''}</p>
+                        </div>
+                      </div>
+                      <div className="text-[11px] text-right shrink-0">
+                        <span className="font-bold text-emerald-700">{x.approved}</span>
+                        <span className="text-slate-400"> duyệt / </span>
+                        <span className="font-semibold text-[#1F5FBF]">{x.submitted}</span>
+                        <span className="text-slate-400"> nộp</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Đoàn viên chưa từng tham gia */}
+            <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
+              <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4 text-rose-600" />
+                    Chưa từng tham gia ({participationStats.neverJoined.length})
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-0.5">Không bấm tham gia và không nộp bài nào</p>
+                </div>
+                <button
+                  type="button"
+                  disabled={participationStats.neverJoined.length === 0}
+                  onClick={async () => {
+                    await exportExcel({
+                      fileName: `Doan_vien_chua_tham_gia_${yearlySettings.year}.xlsx`,
+                      sheetName: 'Chưa tham gia',
+                      title: 'DANH SÁCH ĐOÀN VIÊN CHƯA THAM GIA HOẠT ĐỘNG',
+                      columns: [
+                        { header: 'Họ và tên', key: 'name', width: 26 },
+                        { header: 'Chi đoàn', key: 'unit', width: 26 },
+                      ],
+                      rows: participationStats.neverJoined.map(x => ({
+                        name: x.member.full_name,
+                        unit: getUnitById(x.member.unit_id)?.name ?? '',
+                      })),
+                    });
+                    showToast({ title: 'Đã xuất file Excel', description: `${participationStats.neverJoined.length} đoàn viên.`, type: 'success' });
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg disabled:opacity-50 shrink-0"
+                >
+                  <Download className="w-3.5 h-3.5" /> Xuất Excel
+                </button>
+              </div>
+              {participationStats.neverJoined.length === 0 ? (
+                <p className="p-6 text-center text-emerald-600 text-xs font-semibold">Mọi đoàn viên đều đã tham gia ít nhất một hoạt động.</p>
+              ) : (
+                <div className="divide-y divide-slate-100 max-h-80 overflow-y-auto">
+                  {participationStats.neverJoined.map(x => (
+                    <div key={x.member.id} className="p-3 flex items-center justify-between gap-2">
+                      <span className="text-xs font-semibold text-slate-800 truncate">{x.member.full_name}</span>
+                      <span className="text-[11px] text-slate-500 shrink-0">
+                        {getUnitById(x.member.unit_id)?.name ?? ''}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TAB NHÂN SỰ */}
+      {activeTab === 'personnel' && (
+        <div className="space-y-5">
+          {/* Tổng quan */}
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {[
+              { label: 'Tổng đoàn viên', value: personnelStats.total, cls: 'text-[#1F5FBF]' },
+              { label: 'Chi đoàn hoạt động', value: units.filter(u => u.is_active).length, cls: 'text-slate-800' },
+              { label: 'Sắp trưởng thành (12 tháng)', value: personnelStats.upcomingMatured.length, cls: 'text-amber-700' },
+              { label: 'Chi đoàn thiếu bí thư', value: personnelStats.vacantSecretary.length, cls: personnelStats.vacantSecretary.length > 0 ? 'text-rose-600' : 'text-emerald-700' },
+            ].map(x => (
+              <div key={x.label} className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs text-center">
+                <p className={`text-2xl font-extrabold ${x.cls}`}>{x.value}</p>
+                <p className="text-[11px] text-slate-500 mt-0.5">{x.label}</p>
+              </div>
+            ))}
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+            {/* Phân bố độ tuổi */}
+            <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-xs">
+              <h3 className="text-sm font-bold text-slate-900 mb-3 pb-2 border-b border-slate-100">
+                Phân bố theo độ tuổi
+              </h3>
+              <div className="h-56">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart
+                    data={[
+                      { name: 'Dưới 18', value: personnelStats.groups.under18 },
+                      { name: '18 – 25', value: personnelStats.groups.from18to25 },
+                      { name: '26 – 30', value: personnelStats.groups.from26to30 },
+                      { name: 'Trên 30', value: personnelStats.groups.over30 },
+                    ]}
+                    margin={{ top: 5, right: 10, left: -20, bottom: 5 }}
+                  >
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                    <XAxis dataKey="name" tick={{ fontSize: 11 }} />
+                    <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
+                    <Tooltip formatter={(v: any) => [`${v} đoàn viên`, 'Số lượng']} contentStyle={{ borderRadius: 8, fontSize: 12 }} />
+                    <Bar dataKey="value" fill="#1F5FBF" radius={[6, 6, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+
+            {/* Kết nạp theo tháng */}
+            <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-xs">
+              <h3 className="text-sm font-bold text-slate-900 mb-3 pb-2 border-b border-slate-100">
+                Đoàn viên kết nạp 12 tháng gần nhất
+              </h3>
+              <div className="h-56">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={personnelStats.monthlyJoin} margin={{ top: 5, right: 10, left: -20, bottom: 5 }}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                    <XAxis dataKey="month" tick={{ fontSize: 10 }} />
+                    <YAxis tick={{ fontSize: 11 }} allowDecimals={false} />
+                    <Tooltip formatter={(v: any) => [`${v} đoàn viên`, 'Kết nạp']} contentStyle={{ borderRadius: 8, fontSize: 12 }} />
+                    <Line type="monotone" dataKey="count" stroke="#10B981" strokeWidth={2} dot={{ r: 3 }} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          </div>
+
+          {/* Sắp trưởng thành — cần chuẩn bị chuyển sinh hoạt */}
+          <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
+            <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+              <div>
+                <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 text-amber-600" />
+                  Đoàn viên sắp trưởng thành ({personnelStats.upcomingMatured.length})
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Đủ {yearlySettings.matured_age} tuổi trong 12 tháng tới — cần chuẩn bị chuyển sinh hoạt.
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled={personnelStats.upcomingMatured.length === 0}
+                onClick={async () => {
+                  await exportExcel({
+                    fileName: `Doan_vien_sap_truong_thanh_${yearlySettings.year}.xlsx`,
+                    sheetName: 'Sắp trưởng thành',
+                    title: 'DANH SÁCH ĐOÀN VIÊN SẮP TRƯỞNG THÀNH',
+                    columns: [
+                      { header: 'Họ và tên', key: 'name', width: 26 },
+                      { header: 'Chi đoàn', key: 'unit', width: 26 },
+                      { header: 'Còn lại (tháng)', key: 'months', width: 16 },
+                    ],
+                    rows: personnelStats.upcomingMatured.map(x => ({
+                      name: x.name, unit: x.unit, months: x.monthsLeft,
+                    })),
+                  });
+                  showToast({ title: 'Đã xuất file Excel', description: `${personnelStats.upcomingMatured.length} đoàn viên.`, type: 'success' });
+                }}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg disabled:opacity-50"
+              >
+                <Download className="w-3.5 h-3.5" /> Xuất Excel
+              </button>
+            </div>
+            {personnelStats.upcomingMatured.length === 0 ? (
+              <p className="p-6 text-center text-slate-400 text-xs">Không có đoàn viên nào sắp trưởng thành trong 12 tháng tới.</p>
+            ) : (
+              <div className="overflow-x-auto max-h-80">
+                <table className="w-full text-xs text-left">
+                  <thead className="bg-slate-50 text-slate-700 uppercase font-bold border-b border-slate-200 sticky top-0">
+                    <tr>
+                      <th className="p-3">Họ và tên</th>
+                      <th className="p-3">Chi đoàn</th>
+                      <th className="p-3 text-center">Còn lại</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {personnelStats.upcomingMatured.map((m, i) => (
+                      <tr key={i} className="hover:bg-slate-50">
+                        <td className="p-3 font-semibold text-slate-900">{m.name}</td>
+                        <td className="p-3 text-slate-600">{m.unit}</td>
+                        <td className="p-3 text-center">
+                          <span className={`px-2 py-0.5 rounded-full font-bold text-[11px] ${
+                            m.monthsLeft <= 3 ? 'bg-rose-100 text-rose-800'
+                            : m.monthsLeft <= 6 ? 'bg-amber-100 text-amber-800'
+                            : 'bg-slate-100 text-slate-600'
+                          }`}>
+                            {m.monthsLeft} tháng
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+            {/* Chi đoàn thiếu bí thư */}
+            <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
+              <div className="p-4 border-b border-slate-100">
+                <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                  <ShieldAlert className="w-4 h-4 text-rose-600" />
+                  Chi đoàn thiếu bí thư ({personnelStats.vacantSecretary.length})
+                </h3>
+              </div>
+              {personnelStats.vacantSecretary.length === 0 ? (
+                <p className="p-6 text-center text-emerald-600 text-xs font-semibold">Mọi chi đoàn đều có bí thư.</p>
+              ) : (
+                <div className="divide-y divide-slate-100">
+                  {personnelStats.vacantSecretary.map(x => (
+                    <div key={x.unit.id} className="p-3 flex items-center justify-between gap-2">
+                      <span className="text-xs font-semibold text-slate-800">{x.unit.name}</span>
+                      <span className="text-[11px] text-slate-500">{x.actual} đoàn viên</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Chênh lệch quân số */}
+            <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
+              <div className="p-4 border-b border-slate-100">
+                <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                  <Users className="w-4 h-4 text-amber-600" />
+                  Chênh lệch quân số khai báo / thực tế
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">Top 10 chi đoàn lệch nhiều nhất</p>
+              </div>
+              {personnelStats.mismatchUnits.length === 0 ? (
+                <p className="p-6 text-center text-emerald-600 text-xs font-semibold">Quân số khai báo khớp thực tế.</p>
+              ) : (
+                <div className="divide-y divide-slate-100">
+                  {personnelStats.mismatchUnits.map(x => (
+                    <div key={x.unit.id} className="p-3 flex items-center justify-between gap-2">
+                      <span className="text-xs font-semibold text-slate-800 truncate">{x.unit.name}</span>
+                      <span className="text-[11px] whitespace-nowrap">
+                        <span className="text-slate-500">khai {x.declared}</span>
+                        {' / '}
+                        <span className="font-bold text-[#1F5FBF]">{x.actual}</span>
+                        <span className={`ml-2 px-1.5 py-0.5 rounded font-bold ${
+                          x.mismatch > 5 ? 'bg-rose-100 text-rose-800' : 'bg-amber-100 text-amber-800'
+                        }`}>lệch {x.mismatch}</span>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -974,12 +1588,70 @@ export const ReportsPage: React.FC = () => {
                 </div>
               </div>
 
-              <div className="p-3 bg-slate-50 rounded-lg border border-slate-200 space-y-2">
-                <span className="font-bold text-slate-800 block">Số liệu đã đóng gói trong snapshot:</span>
-                <p className="text-slate-600">
-                  Văn bản bao gồm đầy đủ dữ liệu tổng hợp thi đua 31 chi đoàn, tiến độ phong trào và danh sách đoàn viên mới kết nạp trong kỳ.
-                </p>
-              </div>
+              {(() => {
+                const d = (selectedReport.data ?? {}) as Record<string, any>;
+                const sum = (d.summary ?? {}) as Record<string, any>;
+                const byUnit = (sum.byUnit ?? []) as Array<Record<string, any>>;
+                const hasPeriodData = sum.resultSubmitted !== undefined;
+                if (!hasPeriodData) {
+                  return (
+                    <div className="p-3 bg-slate-50 rounded-lg border border-slate-200 text-slate-600">
+                      Báo cáo này được lập trước khi có số liệu theo kỳ. Nội dung chi tiết sẽ có ở các báo cáo lập từ nay.
+                    </div>
+                  );
+                }
+                return (
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-2 gap-2">
+                      {[
+                        { label: 'Nhiệm vụ trong kỳ', value: sum.taskInPeriod ?? 0 },
+                        { label: 'Bài chi đoàn đã nộp', value: sum.resultSubmitted ?? 0 },
+                        { label: 'Đã duyệt', value: sum.resultApproved ?? 0, cls: 'text-emerald-700' },
+                        { label: 'Chờ duyệt / Từ chối', value: `${sum.resultPending ?? 0} / ${sum.resultRejected ?? 0}` },
+                        { label: 'Bài nộp cá nhân', value: sum.memberSubmissionCount ?? 0 },
+                        { label: 'Lượt đoàn viên tham gia', value: sum.totalParticipants ?? 0 },
+                        { label: 'Đoàn viên mới kết nạp', value: sum.newMembersInPeriod ?? 0 },
+                        { label: 'Tỷ lệ duyệt', value: `${sum.completionRate ?? 0}%`, cls: 'text-[#1F5FBF]' },
+                      ].map(x => (
+                        <div key={x.label} className="p-2 bg-slate-50 rounded-lg border border-slate-200">
+                          <span className="text-slate-400 block text-[10px]">{x.label}</span>
+                          <strong className={`text-sm ${x.cls ?? 'text-slate-800'}`}>{x.value}</strong>
+                        </div>
+                      ))}
+                    </div>
+
+                    {byUnit.length > 0 && (
+                      <div className="border border-slate-200 rounded-lg overflow-hidden">
+                        <p className="px-3 py-2 bg-slate-50 font-bold text-slate-700 text-[11px] uppercase">
+                          Chi tiết theo chi đoàn
+                        </p>
+                        <div className="max-h-52 overflow-y-auto">
+                          <table className="w-full text-[11px]">
+                            <thead className="bg-white border-b border-slate-100 text-slate-500">
+                              <tr>
+                                <th className="p-2 text-left">Chi đoàn</th>
+                                <th className="p-2 text-center">Nộp</th>
+                                <th className="p-2 text-center">Duyệt</th>
+                                <th className="p-2 text-center">Lượt ĐV</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100">
+                              {byUnit.map((u, i) => (
+                                <tr key={i}>
+                                  <td className="p-2 text-slate-800">{u.unit_name}</td>
+                                  <td className="p-2 text-center">{u.submitted}</td>
+                                  <td className="p-2 text-center font-bold text-emerald-700">{u.approved}</td>
+                                  <td className="p-2 text-center">{u.participants}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
             </div>
 
             <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">

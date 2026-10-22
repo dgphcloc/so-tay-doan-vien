@@ -347,7 +347,7 @@ type Gd1Keys =
   | 'remindUnit' | 'remindAllUnsubmitted' | 'setTaskSubCriteria' | 'countUnitsWithoutResult'
   | 'approveAllMemberSubmissions'
   | 'listPendingReviews' | 'getReviewDetail' | 'approve' | 'reject'
-  | 'listWarnings' | 'resolveWarning' | 'sendNotification'
+  | 'listWarnings' | 'resolveWarning' | 'sendNotification' | 'syncWarnings'
   | 'calculateUnitScores';
 
 export class SupabaseGd1Repository implements Pick<Repository, Gd1Keys> {
@@ -615,12 +615,44 @@ export class SupabaseGd1Repository implements Pick<Repository, Gd1Keys> {
     const rpc = await this.supabase.rpc('stats_overview');
     if (!rpc.error && rpc.data) totals = rpc.data as Row;
 
+    // --- Chi đoàn trễ hạn + nhiệm vụ sắp hết hạn (tính thật) ---
+    const safeAll = <T,>(p: Promise<T[]>): Promise<T[]> => p.catch(() => [] as T[]);
+    const [pubTasks, taskUnitsRows, approvedResults] = await Promise.all([
+      safeAll(fetchAll((f, t) => this.supabase.from('tasks')
+        .select('id, due_date, status').eq('status', 'published').range(f, t))),
+      safeAll(fetchAll((f, t) => this.supabase.from('task_units').select('task_id, unit_id').range(f, t))),
+      safeAll(fetchAll((f, t) => this.supabase.from('task_results')
+        .select('task_id, unit_id, status').in('status', ['approved', 'pending']).range(f, t))),
+    ]);
+
+    const nowMs = Date.now();
+    const DAY = 1000 * 60 * 60 * 24;
+
+    // Nhiệm vụ đã quá hạn mà chi đoàn được giao vẫn chưa nộp (hoặc bị từ chối)
+    const overdueUnitIds = new Set<string>();
+    for (const t of pubTasks) {
+      const due = new Date(String(t.due_date)).getTime();
+      if (!Number.isFinite(due) || due >= nowMs) continue;   // chưa quá hạn
+      const assigned = taskUnitsRows.filter((tu: Row) => String(tu.task_id) === String(t.id));
+      for (const tu of assigned) {
+        const res = approvedResults.find((r: Row) =>
+          String(r.task_id) === String(t.id) && String(r.unit_id) === String(tu.unit_id));
+        if (!res) overdueUnitIds.add(String(tu.unit_id));
+      }
+    }
+
+    // Nhiệm vụ published còn hạn trong 7 ngày tới
+    const dueSoon7DaysCount = pubTasks.filter((t) => {
+      const due = new Date(String(t.due_date)).getTime();
+      return Number.isFinite(due) && due >= nowMs && due <= nowMs + 7 * DAY;
+    }).length;
+
     return {
       pendingCount: taskPending + criteriaPending,
       taskPendingCount: taskPending,
       criteriaPendingCount: criteriaPending,
-      overdueUnitsCount: 0,    // giai đoạn 2: cần dữ liệu nhiệm vụ / tiêu chí
-      dueSoon7DaysCount: 0,    // giai đoạn 2
+      overdueUnitsCount: overdueUnitIds.size,
+      dueSoon7DaysCount,
       newMembersCount: members.filter((m) => m.joined_date && Number(String(m.joined_date).slice(0, 4)) === year).length,
       maturedCount: members.filter((m) => ageOn(m.birth_date, today) >= settings.matured_age).length,
       totalMembers: totals ? Number(totals.total_members ?? 0) : members.length,
@@ -2500,6 +2532,71 @@ export class SupabaseGd1Repository implements Pick<Repository, Gd1Keys> {
   // GIAI ĐOẠN 2 — NHẮC NHỞ & CẢNH BÁO
   // =====================================================================
 
+/**
+   * Sinh cảnh báo tự động cho nhiệm vụ quá hạn / sắp hết hạn.
+   * Gọi mỗi lần mở trang Nhắc nhở — chỉ thêm cảnh báo mới, không nhân đôi
+   * (mỗi cặp unit + task + mã chỉ có tối đa một cảnh báo đang mở).
+   */
+  async syncWarnings(): Promise<{ created: number }> {
+    try {
+      const safeAll = <T,>(p: Promise<T[]>): Promise<T[]> => p.catch(() => [] as T[]);
+      const [tasks, taskUnits, results, existing] = await Promise.all([
+        safeAll(fetchAll((f, t) => this.supabase.from('tasks')
+          .select('id, title, due_date, status').eq('status', 'published').range(f, t))),
+        safeAll(fetchAll((f, t) => this.supabase.from('task_units').select('task_id, unit_id').range(f, t))),
+        safeAll(fetchAll((f, t) => this.supabase.from('task_results')
+          .select('task_id, unit_id').range(f, t))),
+        safeAll(fetchAll((f, t) => this.supabase.from('warnings')
+          .select('unit_id, task_id, codes').is('resolved_at', null).range(f, t))),
+      ]);
+
+      const nowMs = Date.now();
+      const DAY = 1000 * 60 * 60 * 24;
+      const submitted = new Set(results.map((r: Row) => `${r.task_id}_${r.unit_id}`));
+      const openKey = new Set(
+        existing.map((w: Row) => `${w.unit_id}_${w.task_id}_${(w.codes ?? [])[0] ?? ''}`)
+      );
+
+      const toInsert: Row[] = [];
+      for (const t of tasks) {
+        const due = new Date(String(t.due_date)).getTime();
+        if (!Number.isFinite(due)) continue;
+        const daysLeft = Math.ceil((due - nowMs) / DAY);
+        const isOverdue = daysLeft < 0;
+        const isDueSoon = daysLeft >= 0 && daysLeft <= 3;
+        if (!isOverdue && !isDueSoon) continue;
+
+        const code = isOverdue ? 'OVERDUE' : 'DUE_SOON';
+        const level = isOverdue ? 'red' : daysLeft <= 1 ? 'orange' : 'yellow';
+
+        for (const tu of taskUnits) {
+          if (String(tu.task_id) !== String(t.id)) continue;
+          if (submitted.has(`${t.id}_${tu.unit_id}`)) continue;   // đã nộp thì không cảnh báo
+          const key = `${tu.unit_id}_${t.id}_${code}`;
+          if (openKey.has(key)) continue;                          // đã có cảnh báo đang mở
+          toInsert.push({
+            unit_id: Number(tu.unit_id),
+            task_id: Number(t.id),
+            codes: [code],
+            level,
+            message: isOverdue
+              ? `Quá hạn ${Math.abs(daysLeft)} ngày: "${t.title}"`
+              : `Còn ${daysLeft} ngày: "${t.title}"`,
+            is_read: false,
+            resolved_at: null,
+          });
+          openKey.add(key);
+        }
+      }
+
+      if (toInsert.length === 0) return { created: 0 };
+      const { error } = await this.supabase.from('warnings').insert(toInsert);
+      if (error) return { created: 0 };
+      return { created: toInsert.length };
+    } catch {
+      return { created: 0 };
+    }
+  }
   async listWarnings(tab: 'open' | 'resolved'): Promise<
     Array<{ warning: DbWarning; unit: DbUnit | null; task: DbTask | null; subCriterion: DbSubCriterion | null }>
   > {
