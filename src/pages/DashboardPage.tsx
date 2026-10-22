@@ -1,5 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
+import { isAdminLevel } from '../utils/permissions';
 import { Link, useNavigate } from 'react-router-dom';
 import {
   FileCheck2,
@@ -63,6 +64,9 @@ export const DashboardPage: React.FC = () => {
   const isUnitSecretary = currentRole === 'unit_secretary';
   // Điểm thi đua: chỉ bí thư chi đoàn và bí thư xã/staff xem được. Đoàn viên không xem.
   const canViewScores = currentRole !== 'member';
+  // Nhật ký hệ thống: chỉ bí thư xã / cán bộ xã / super admin xem.
+  // Bí thư chi đoàn và đoàn viên không thấy khối này.
+  const canViewLogs = isAdminLevel(currentRole) || currentRole === 'staff';
 
   // State
   const [chartView, setChartView] = useState<'top10' | 'bottom5'>('top10');
@@ -712,7 +716,8 @@ export const DashboardPage: React.FC = () => {
         )}
       </div>
 
-      {/* 5) "Hoạt động gần đây" dạng dòng thời gian 10 dòng */}
+      {/* 5) "Hoạt động gần đây" — chỉ bí thư xã / cán bộ xã xem được */}
+      {canViewLogs && (
       <div className="bg-white p-5 rounded-xl border border-slate-200/90 shadow-xs">
         <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-4">
           <div className="flex items-center gap-2">
@@ -743,6 +748,7 @@ export const DashboardPage: React.FC = () => {
           })}
         </div>
       </div>
+      )}
 
       {/* Chi tiết Chi đoàn Modal / Slide-over khi bấm vào biểu đồ hoặc ma trận */}
       {selectedUnit && (

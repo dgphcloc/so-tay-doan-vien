@@ -563,3 +563,71 @@ Modal chi tiết báo cáo hiển thị thật các số này (trước đây l�
 - `updateTask` vẫn không ghi DB (chưa có nút sửa nhiệm vụ trên UI)
 - Gửi nhắc theo lịch hẹn vẫn chỉ lưu state, không có cron
 - Xuất Word (.docx) chưa hỗ trợ
+
+---
+
+## 21. Avatar + phân quyền nhật ký + tên chi đoàn trên Navbar (2026-10-19)
+
+### 1. Cập nhật avatar bằng upload file
+
+- Trang **Hồ sơ của tôi**: khối ảnh đại diện mới — xem trước tròn, nút **"Chọn ảnh từ máy"**, cho phép bỏ ảnh.
+- Tải thẳng lên Storage bucket `evidences` tại `avatars/member_<id>/`. Giới hạn 5MB ở phía client.
+- Ảnh URL vẫn lưu vào `members.avatar_url` qua RPC `member_self_update` (không đổi luồng ghi cũ). URL cũ vẫn dán tay được.
+
+Tầng dưới: `repository.uploadMyAvatar(file)` → `AppContext.uploadMyAvatar` → `MyProfilePage.handlePickAvatar`.
+
+### 2. Nhật ký ở Tổng quan: ẩn với bí thư chi đoàn và đoàn viên
+
+Khối "Hoạt động gần đây" giờ bọc trong `canViewLogs = isAdminLevel(role) || role === 'staff'`.
+Bí thư chi đoàn và đoàn viên không còn thấy dòng thời gian 10 sự kiện nữa.
+
+### 3. Navbar: hiện tên chi đoàn cho bí thư chi đoàn và đoàn viên
+
+- Dưới tên hiển thị: nếu là `unit_secretary` hoặc `member` → hiện **tên chi đoàn** (ví dụ "Chi đoàn ấp 1") thay cho nhãn vai trò. Các vai trò khác giữ nguyên nhãn vai trò.
+- Trong menu người dùng: thêm dòng tên chi đoàn (đậm), giữ dòng đơn vị xã bên dưới.
+
+Lấy tên từ `units` đã có trong context, theo `currentMember.unit_id`.
+
+---
+
+## 22. Sửa quét QR + tên miền trong QR (2026-10-22)
+
+### Vì sao Chrome máy tính cũng không quét được
+
+Code cũ dùng `BarcodeDetector` — API gốc của trình duyệt. API này **không có** trên:
+- Chrome desktop Windows (chỉ có trên Chrome **Android** và ChromeOS)
+- Cốc Cốc, Firefox, Safari (mọi nền tảng)
+
+Nên dù là Chrome hay Cốc Cốc trên máy Windows, nút quét đều báo "Trình duyệt chưa hỗ trợ quét QR".
+
+**Đã sửa:** cài **`jsqr`** (thư viện JS thuần, ~50KB) làm bộ giải mã. Vòng lặp: vẽ khung hình video vào canvas ẩn → `jsQR` đọc → tìm thấy thì điều hướng. Chạy trên **mọi trình duyệt** miễn là mở được camera.
+
+Chi tiết kỹ thuật:
+- Thu nhỏ ảnh về tối đa 640px cạnh dài trước khi giải mã (nhanh hơn nhiều)
+- `willReadFrequently: true` trên canvas context để tránh cảnh báo hiệu năng
+- `inversionAttempts: 'dontInvert'` (QR in đen trên nền trắng — trường hợp phổ biến)
+
+### Tên miền trong QR
+
+QR cũ dùng `window.location.origin` → tạo trên máy dev thì QR chứa `http://localhost:3000`, điện thoại quét sẽ mở localhost của chính nó → trắng trang.
+
+**Đã sửa:** `buildMemberSubmitUrl` ưu tiên biến môi trường **`VITE_PUBLIC_URL`**:
+```ts
+const base = import.meta.env.VITE_PUBLIC_URL?.replace(/\/+$/, '')
+  ?? `${window.location.origin}${window.location.pathname}`;
+```
+
+- Có `VITE_PUBLIC_URL` → QR luôn trỏ về tên miền thật, tạo ở đâu cũng vậy
+- Không có → dùng địa chỉ máy đang mở, và modal hiện **cảnh báo vàng** nhắc đặt biến
+
+Đã thêm `VITE_PUBLIC_URL` vào `.env.example` và khai báo type trong `src/vite-env.d.ts`.
+
+### Cần làm khi deploy
+Đặt trên Vercel (Production + Preview):
+```
+VITE_PUBLIC_URL=https://<tên-miền-vercel-của-bạn>
+```
+Không có dấu `/` ở cuối.
+
+### Cài đặt
+`npm install jsqr` gặp xung đột peer dependency có sẵn của project (`esbuild ^0.25.0` vs vite 8 đòi `^0.27||^0.28`) — **không liên quan tới jsqr**. Đã cài bằng `--legacy-peer-deps`. Nếu cài lại từ đầu cần dùng cùng cờ này, hoặc nâng `esbuild` trong devDependencies.

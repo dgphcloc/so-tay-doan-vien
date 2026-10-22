@@ -126,6 +126,8 @@ export interface Repository {
   // 0c. Tự phục vụ: đoàn viên tự sửa hồ sơ + bảng tin nhiệm vụ
   /** Đoàn viên sửa hồ sơ của mình (chỉ trường an toàn). */
   updateMyProfile(updates: Partial<DbMember>): Promise<{ success: boolean; message?: string }>;
+  /** Tải ảnh đại diện của chính mình lên Storage, trả URL công khai. */
+  uploadMyAvatar(file: File): Promise<{ url: string; storagePath: string }>;
   /**
    * Bảng tin: nhiệm vụ đang mở giao cho chi đoàn của tôi, kèm trạng thái tham gia
    * của tôi và (nếu là bí thư) số đoàn viên đã xác nhận.

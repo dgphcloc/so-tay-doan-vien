@@ -1,11 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import { useApp } from '../context/AppContext';
 import { formatDateVN } from '../mock/data';
-import { User, Save, Loader2, Lock, Info } from 'lucide-react';
+import { User, Save, Loader2, Lock, Info, Camera, Upload, X } from 'lucide-react';
+import { pickImageFile } from '../utils/evidence';
 import type { PoliticalTheoryLevel } from '../types';
 
 export const MyProfilePage: React.FC = () => {
-  const { currentUser, currentMember, getUnitById, updateMyProfile, showToast } = useApp();
+  const { currentUser, currentMember, getUnitById, updateMyProfile, uploadMyAvatar, showToast } = useApp();
 
   const [phone, setPhone] = useState('');
   const [religion, setReligion] = useState('');
@@ -15,6 +16,7 @@ export const MyProfilePage: React.FC = () => {
   const [avatarUrl, setAvatarUrl] = useState('');
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
+  const [uploadingAvatar, setUploadingAvatar] = useState(false);
 
   useEffect(() => {
     if (currentMember) {
@@ -51,6 +53,27 @@ export const MyProfilePage: React.FC = () => {
   };
 
   const unit = getUnitById(currentMember.unit_id);
+
+  /** Chọn ảnh từ máy, tải lên Storage rồi điền vào ô URL. */
+  const handlePickAvatar = async () => {
+    try {
+      const file = await pickImageFile();
+      if (!file) return;
+      // Giới hạn 5MB để tránh tải file quá lớn
+      if (file.size > 5 * 1024 * 1024) {
+        showToast({ title: 'Ảnh quá lớn', description: 'Vui lòng chọn ảnh dưới 5MB.', type: 'error' });
+        return;
+      }
+      setUploadingAvatar(true);
+      const up = await uploadMyAvatar(file);
+      setAvatarUrl(up.url);
+      showToast({ title: 'Đã tải ảnh lên', description: 'Bấm "Lưu thay đổi" để hoàn tất.', type: 'success' });
+    } catch (e) {
+      showToast({ title: 'Không tải được ảnh', description: e instanceof Error ? e.message : '', type: 'error' });
+    } finally {
+      setUploadingAvatar(false);
+    }
+  };
 
   return (
     <div className="space-y-6 max-w-2xl">
@@ -116,11 +139,36 @@ export const MyProfilePage: React.FC = () => {
               <option value="other">Khác</option>
             </select>
           </div>
-          <div>
-            <label className="font-bold text-slate-800 block mb-1">Ảnh đại diện (URL):</label>
+          <div className="sm:col-span-2">
+            <label className="font-bold text-slate-800 block mb-1">Ảnh đại diện:</label>
+            <div className="flex items-center gap-3">
+              {avatarUrl ? (
+                <div className="relative shrink-0">
+                  <img src={avatarUrl} alt="Ảnh đại diện"
+                    className="w-16 h-16 rounded-full object-cover border-2 border-slate-200" />
+                  <button type="button" onClick={() => setAvatarUrl('')}
+                    title="Bỏ ảnh này"
+                    className="absolute -top-1 -right-1 bg-white border border-slate-200 rounded-full p-0.5 text-rose-600 hover:bg-rose-50">
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
+              ) : (
+                <div className="w-16 h-16 rounded-full bg-slate-100 border-2 border-dashed border-slate-300 flex items-center justify-center shrink-0">
+                  <Camera className="w-5 h-5 text-slate-400" />
+                </div>
+              )}
+              <div className="flex-1 space-y-1.5">
+                <button type="button" disabled={uploadingAvatar} onClick={handlePickAvatar}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-white bg-[#1F5FBF] hover:bg-[#1a4fa0] rounded-lg disabled:opacity-60">
+                  {uploadingAvatar ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
+                  {uploadingAvatar ? 'Đang tải lên…' : 'Chọn ảnh từ máy'}
+                </button>
+                <p className="text-[11px] text-slate-400">JPG/PNG, tối đa 5MB. Hoặc dán URL bên dưới.</p>
+              </div>
+            </div>
             <input type="text" value={avatarUrl} onChange={e => setAvatarUrl(e.target.value)}
               placeholder="https://..."
-              className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:border-[#1F5FBF]" />
+              className="w-full mt-2 p-2.5 bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:border-[#1F5FBF]" />
           </div>
         </div>
         <div>

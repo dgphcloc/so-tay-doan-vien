@@ -329,7 +329,7 @@ type Gd1Keys =
   | 'listJournalEntries' | 'saveJournalEntry' | 'deleteJournalEntry' | 'uploadJournalImage'
   | 'getCurrentUser'
   | 'listMyTodo' | 'uploadEvidence' | 'submitTaskResult' | 'submitCriterionSubmission'
-  | 'updateMyProfile' | 'listMyFeed' | 'setTaskRegistration'
+  | 'updateMyProfile' | 'uploadMyAvatar' | 'listMyFeed' | 'setTaskRegistration'
   | 'submitMemberResult' | 'listMemberSubmissions' | 'reviewMemberSubmission'
   | 'listMemberSubmissionEvidences' | 'listTaskParticipants' | 'listTaskParticipantsAll'
   | 'getDashboard' | 'listUnits' | 'getUnit' | 'saveUnit' | 'deactivateUnit' | 'createUnit' | 'deleteUnit'
@@ -1616,6 +1616,22 @@ export class SupabaseGd1Repository implements Pick<Repository, Gd1Keys> {
     if (error) return { success: false, message: friendlyError(error) };
     const r = data as Row;
     return r?.success ? { success: true } : { success: false, message: r?.message ?? 'Không lưu được' };
+  }
+
+  /**
+   * Tải ảnh đại diện của chính mình lên bucket `evidences` (thư mục avatars/).
+   * Chỉ ghi vào thư mục riêng nên không đụng ảnh minh chứng của người khác.
+   */
+  async uploadMyAvatar(file: File): Promise<{ url: string; storagePath: string }> {
+    const memberId = await this.requireMemberId();
+    const ext = (file.name.split('.').pop() || 'jpg').toLowerCase();
+    const storagePath = `avatars/member_${memberId}/${Date.now()}.${ext}`;
+    const { error } = await this.supabase.storage.from('evidences').upload(storagePath, file, {
+      cacheControl: '3600', upsert: true, contentType: file.type || 'image/jpeg',
+    });
+    if (error) throw new Error(friendlyError(error));
+    const { data } = this.supabase.storage.from('evidences').getPublicUrl(storagePath);
+    return { url: data.publicUrl, storagePath };
   }
 
   async listMyFeed(): Promise<Array<{

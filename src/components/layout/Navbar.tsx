@@ -33,6 +33,7 @@ export const Navbar: React.FC = () => {
     markAllNotificationsAsRead,
     pendingCount,
     showToast,
+    units,
   } = useApp();
 
   // Tên vai trò tiếng Việt để hiển thị
@@ -47,6 +48,11 @@ export const Navbar: React.FC = () => {
   const displayName = currentMember?.full_name ?? currentUser?.email ?? 'Người dùng';
   const roleLabel = ROLE_LABEL[currentRole] ?? 'Người dùng';
   const avatarUrl = currentMember?.avatar_url || `https://i.pravatar.cc/80?u=${currentUser?.profileId ?? 'guest'}`;
+  // Bí thư chi đoàn / đoàn viên: hiện thêm đang thuộc chi đoàn nào
+  const myUnitName = currentMember
+    ? (units.find(u => u.id === currentMember.unit_id)?.name ?? '')
+    : '';
+  const showUnitLine = (currentRole === 'unit_secretary' || currentRole === 'member') && !!myUnitName;
 
   const navigate = useNavigate();
   const [showNotifications, setShowNotifications] = useState(false);
@@ -272,7 +278,9 @@ export const Navbar: React.FC = () => {
               />
               <div className="hidden md:flex flex-col text-left">
                 <span className="text-xs font-bold text-slate-800 leading-tight">{displayName}</span>
-                <span className="text-[11px] text-slate-500">{roleLabel}</span>
+                <span className="text-[11px] text-slate-500 truncate max-w-[10rem]">
+                  {showUnitLine ? myUnitName : roleLabel}
+                </span>
               </div>
               <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
             </button>
@@ -283,6 +291,9 @@ export const Navbar: React.FC = () => {
                   <p className="text-xs font-bold text-slate-900">{displayName}</p>
                   {currentUser?.email && (
                     <p className="text-[11px] text-slate-500 truncate">{currentUser.email}</p>
+                  )}
+                  {showUnitLine && (
+                    <p className="text-[11px] text-slate-600 font-semibold truncate">{myUnitName}</p>
                   )}
                   <p className="text-[11px] text-slate-500">Đoàn TNCS Hồ Chí Minh xã Hòa Bình</p>
                   <span className="inline-block mt-1 text-[10px] font-semibold bg-blue-100 text-[#1F5FBF] px-1.5 py-0.5 rounded">

@@ -89,6 +89,7 @@ interface AppContextType {
 
   // Tự phục vụ: sửa hồ sơ cá nhân + bảng tin nhiệm vụ
   updateMyProfile: (updates: Partial<Member>) => Promise<{ success: boolean; message?: string }>;
+  uploadMyAvatar: (file: File) => ReturnType<typeof repository.uploadMyAvatar>;
   listMyFeed: () => ReturnType<typeof repository.listMyFeed>;
   setTaskRegistration: (taskId: string, isJoining: boolean) => Promise<{ success: boolean; message?: string }>;
 
@@ -879,6 +880,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     [refreshData]
   );
 
+  const uploadMyAvatar = useCallback(
+    (file: File) => repository.uploadMyAvatar(file),
+    []
+  );
+
   const listMyFeed = useCallback(() => repository.listMyFeed(), []);
 
   const submitMemberResult = useCallback(
@@ -1162,6 +1168,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     submitTaskResult,
     submitCriterionSubmission,
     updateMyProfile,
+    uploadMyAvatar,
     getSignupOptions,
     selfRegisterMember,
     journalEntries,

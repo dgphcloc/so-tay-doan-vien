@@ -281,6 +281,7 @@ export const MemberSubmitPage: React.FC = () => {
   // Chưa chọn nhiệm vụ: liệt kê để đoàn viên chọn
   if (!taskParam) {
     return (
+      <>
       <div className="space-y-6">
         <div className="pb-3 border-b border-slate-200">
           <h1 className="text-xl md:text-2xl font-bold text-slate-900 flex items-center gap-2.5">
@@ -338,6 +339,9 @@ export const MemberSubmitPage: React.FC = () => {
           </div>
         )}
       </div>
+
+      {scanOpen && <QrScanModal onClose={() => setScanOpen(false)} />}
+      </>
     );
   }
 

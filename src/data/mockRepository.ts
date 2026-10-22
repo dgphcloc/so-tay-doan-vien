@@ -136,6 +136,9 @@ export class MockRepository implements Repository {
   async updateMyProfile(): Promise<never> {
     throw new Error('Chức năng sửa hồ sơ cá nhân chỉ dùng khi kết nối Supabase thật.');
   }
+  async uploadMyAvatar(): Promise<never> {
+    throw new Error('Tải ảnh đại diện chỉ dùng khi kết nối Supabase thật.');
+  }
   async listMyFeed(): Promise<never> {
     throw new Error('Bảng tin chỉ dùng khi kết nối Supabase thật.');
   }

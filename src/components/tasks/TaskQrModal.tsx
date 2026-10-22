@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import QRCode from 'qrcode';
-import { Download, Copy, X, Loader2, QrCode } from 'lucide-react';
+import { Download, Copy, X, Loader2, QrCode, AlertTriangle } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 
 interface Props {
@@ -9,10 +9,17 @@ interface Props {
   onClose: () => void;
 }
 
-/** Link nộp cá nhân của một nhiệm vụ (app dùng HashRouter nên link nằm sau dấu #). */
+/**
+ * Link nộp cá nhân của một nhiệm vụ (app dùng HashRouter nên link nằm sau dấu #).
+ *
+ * Ưu tiên `VITE_PUBLIC_URL` (tên miền thật trên production) để QR luôn trỏ về
+ * tên miền thật. Nếu không cấu hình, dùng máy hiện tại (chỉ đúng khi tạo QR
+ * trực tiếp trên production).
+ */
 export function buildMemberSubmitUrl(taskId: string): string {
-  const { origin, pathname } = window.location;
-  return `${origin}${pathname}#/nop-ca-nhan?task=${encodeURIComponent(taskId)}`;
+  const base = (import.meta.env.VITE_PUBLIC_URL as string | undefined)?.replace(/\/+$/, '')
+    ?? `${window.location.origin}${window.location.pathname}`;
+  return `${base}#/nop-ca-nhan?task=${encodeURIComponent(taskId)}`;
 }
 
 /** Hộp thoại hiện mã QR để đoàn viên quét và nộp minh chứng cá nhân. */
@@ -71,6 +78,16 @@ export const TaskQrModal: React.FC<Props> = ({ taskId, taskTitle, onClose }) => 
         <p className="text-[11px] text-slate-500">
           Đoàn viên quét mã, đăng nhập rồi nộp ảnh + GPS + ghi chú. Chỉ đoàn viên đúng phạm vi nhiệm vụ mới nộp được.
         </p>
+
+        {!import.meta.env.VITE_PUBLIC_URL && (
+          <div className="p-2.5 bg-amber-50 border border-amber-200 rounded-lg text-[11px] text-amber-800 flex items-start gap-1.5">
+            <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+            <span>
+              QR đang dùng địa chỉ <b>{window.location.origin}</b>. Nếu tạo QR trên máy dev, điện thoại quét sẽ
+              không mở được. Đặt <b>VITE_PUBLIC_URL</b> = tên miền thật để QR luôn đúng.
+            </span>
+          </div>
+        )}
 
         <div className="p-2 bg-slate-50 border border-slate-200 rounded-lg text-[10px] text-slate-600 break-all select-all">{url}</div>
 

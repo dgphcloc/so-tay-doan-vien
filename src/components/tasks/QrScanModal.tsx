@@ -1,27 +1,20 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import jsQR from 'jsqr';
 import { Camera, X, Loader2, AlertTriangle, Keyboard } from 'lucide-react';
 
 /**
  * Quét mã QR bằng camera của thiết bị.
  *
- * Dùng BarcodeDetector có sẵn trong Chrome/Edge (kể cả Chrome Android) nên không
- * cần thêm thư viện. Trình duyệt không hỗ trợ (Safari, Firefox) thì báo rõ và
- * cho dán link thủ công thay vì im lặng không làm gì.
+ * Giải mã bằng `jsqr` (thuần JS) nên chạy trên MỌI trình duyệt — kể cả
+ * Chrome desktop Windows, Cốc Cốc, Firefox, Safari, nơi API `BarcodeDetector`
+ * không tồn tại. Nếu trình duyệt không mở được camera, vẫn còn ô dán link.
+ *
+ * Về link trong QR: mã được tạo từ `buildMemberSubmitUrl` (xem TaskQrModal),
+ * ưu tiên `VITE_PUBLIC_URL` để QR luôn trỏ về tên miền thật thay vì localhost.
  */
 
-interface BarcodeDetectorLike {
-  detect(source: CanvasImageSource): Promise<Array<{ rawValue: string }>>;
-}
-
-type BarcodeDetectorCtor = new (options?: { formats?: string[] }) => BarcodeDetectorLike;
-
-function getDetectorCtor(): BarcodeDetectorCtor | null {
-  const w = window as unknown as { BarcodeDetector?: BarcodeDetectorCtor };
-  return typeof w.BarcodeDetector === 'function' ? w.BarcodeDetector : null;
-}
-
-/** Rút đường dẫn nội bộ từ nội dung QR (chấp nhận cả URL đầy đủ lẫn hash route). */
+/** Rút đường dẫn nội bộ từ nội dung QR (chấp nhận URL đầy đủ lẫn hash route). */
 export function routeFromScannedText(text: string): string | null {
   const raw = text.trim();
   if (!raw) return null;
@@ -39,14 +32,17 @@ export function routeFromScannedText(text: string): string | null {
 export const QrScanModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   const navigate = useNavigate();
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const rafRef = useRef<number | null>(null);
+  const stopRef = useRef(false);
 
-  const [status, setStatus] = useState<'starting' | 'scanning' | 'error' | 'unsupported'>('starting');
+  const [status, setStatus] = useState<'starting' | 'scanning' | 'error'>('starting');
   const [error, setError] = useState('');
   const [manual, setManual] = useState('');
 
   const stopCamera = () => {
+    stopRef.current = true;
     if (rafRef.current !== null) {
       cancelAnimationFrame(rafRef.current);
       rafRef.current = null;
@@ -73,18 +69,14 @@ export const QrScanModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
     let cancelled = false;
 
     (async () => {
-      const Ctor = getDetectorCtor();
-      if (!Ctor) {
-        setStatus('unsupported');
-        return;
-      }
       if (!navigator.mediaDevices?.getUserMedia) {
-        setStatus('unsupported');
+        setError('Thiết bị hoặc trình duyệt không hỗ trợ camera.');
+        setStatus('error');
         return;
       }
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'environment' },
+          video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } },
           audio: false,
         });
         if (cancelled) {
@@ -98,19 +90,29 @@ export const QrScanModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
         }
         setStatus('scanning');
 
-        const detector = new Ctor({ formats: ['qr_code'] });
-        const tick = async () => {
-          if (cancelled || !videoRef.current) return;
+        // Vòng lặp giải mã: vẽ khung hình vào canvas rồi đưa cho jsQR
+        const tick = () => {
+          if (cancelled || stopRef.current) return;
           const video = videoRef.current;
-          if (video.readyState >= 2) {
-            try {
-              const codes = await detector.detect(video);
-              if (codes.length > 0) {
-                handleText(codes[0].rawValue);
-                return;
+          const canvas = canvasRef.current;
+          if (video && canvas && video.readyState === video.HAVE_ENOUGH_DATA) {
+            const w = video.videoWidth;
+            const h = video.videoHeight;
+            if (w > 0 && h > 0) {
+              // Thu nhỏ ảnh để giải mã nhanh hơn (tối đa 640px cạnh dài)
+              const scale = Math.min(1, 640 / Math.max(w, h));
+              canvas.width = Math.round(w * scale);
+              canvas.height = Math.round(h * scale);
+              const ctx = canvas.getContext('2d', { willReadFrequently: true });
+              if (ctx) {
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                const code = jsQR(img.data, img.width, img.height, { inversionAttempts: 'dontInvert' });
+                if (code && code.data) {
+                  handleText(code.data);
+                  return;
+                }
               }
-            } catch {
-              // Bỏ qua khung hình lỗi, thử khung tiếp theo
             }
           }
           rafRef.current = requestAnimationFrame(tick);
@@ -163,13 +165,6 @@ export const QrScanModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
           </div>
         )}
 
-        {status === 'unsupported' && (
-          <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-800 space-y-1">
-            <p className="font-bold flex items-center gap-1.5"><AlertTriangle className="w-3.5 h-3.5" /> Trình duyệt chưa hỗ trợ quét QR</p>
-            <p>Trình duyệt này không có BarcodeDetector. Hãy dùng Chrome/Edge, hoặc dán link bên dưới.</p>
-          </div>
-        )}
-
         {status === 'error' && (
           <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 flex items-start gap-1.5">
             <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
@@ -201,6 +196,9 @@ export const QrScanModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
           </div>
         </div>
       </div>
+
+      {/* Canvas ẩn để giải mã khung hình */}
+      <canvas ref={canvasRef} className="hidden" />
     </div>
   );
 };
