@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useApp } from '../../context/AppContext';
+import { Avatar } from '../common/Avatar';
 import { exportExcel } from '../../utils/exportExcel';
 import { formatDateVN, formatDateTimeVN } from '../../mock/data';
 import type { Evidence } from '../../types';
@@ -170,7 +171,7 @@ export const TaskParticipantsPanel: React.FC<{ taskId: string }> = ({ taskId }) 
           <button type="button" onClick={reload} className="p-2 text-slate-500 hover:text-slate-800 border border-slate-300 rounded-lg" title="Tải lại">
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
           </button>
-          <button type="button" onClick={handleExport} disabled={filtered.length === 0}
+          <button title="Xuất danh sách tham gia ra file Excel" type="button" onClick={handleExport} disabled={filtered.length === 0}
             className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 rounded-lg disabled:opacity-50">
             <Download className="w-3.5 h-3.5" /> Xuất Excel ({filtered.length})
           </button>
@@ -182,13 +183,15 @@ export const TaskParticipantsPanel: React.FC<{ taskId: string }> = ({ taskId }) 
             ['all', `Tất cả`], ['unsubmitted', 'Chưa nộp'], ['pending', 'Chờ duyệt'],
             ['approved', 'Đã duyệt'], ['rejected', 'Bị từ chối'],
           ] as const).map(([k, label]) => (
-            <button key={k} type="button" onClick={() => setSubmitFilter(k)} className={chip(submitFilter === k)}>{label}</button>
+            <button key={k} type="button" title="Lọc theo trạng thái nộp bài"
+              onClick={() => setSubmitFilter(k)} className={chip(submitFilter === k)}>{label}</button>
           ))}
           <span className="text-[11px] text-slate-400 ml-2 mr-1">Đăng ký:</span>
           {([
             ['all', 'Tất cả'], ['joined', 'Tham gia'], ['rejected', 'Từ chối'], ['none', 'Chưa xác nhận'],
           ] as const).map(([k, label]) => (
-            <button key={k} type="button" onClick={() => setJoinFilter(k)} className={chip(joinFilter === k)}>{label}</button>
+            <button key={k} type="button" title="Lọc theo trạng thái tham gia"
+              onClick={() => setJoinFilter(k)} className={chip(joinFilter === k)}>{label}</button>
           ))}
         </div>
       </div>
@@ -206,15 +209,19 @@ export const TaskParticipantsPanel: React.FC<{ taskId: string }> = ({ taskId }) 
             const sub = submitLabel(r);
             const join = joinLabel(r);
             return (
-              <button
+              <button title="Xem chi tiết"
                 key={r.member.id}
                 type="button"
                 onClick={() => setDetail(r)}
                 className="w-full p-3 flex items-center justify-between gap-3 hover:bg-slate-50 text-left"
               >
                 <div className="flex items-center gap-2.5 min-w-0">
-                  <img src={r.member.avatar_url || undefined} alt=""
-                    className="w-8 h-8 rounded-full object-cover bg-slate-200 shrink-0" />
+                  <Avatar
+                    src={r.member.avatar_url}
+                    name={r.member.full_name}
+                    seed={r.member.id}
+                    size={32}
+                  />
                   <div className="min-w-0">
                     <p className="font-bold text-slate-900 truncate">{r.member.full_name}</p>
                     <p className="text-[10px] text-slate-400 truncate">
@@ -242,7 +249,7 @@ export const TaskParticipantsPanel: React.FC<{ taskId: string }> = ({ taskId }) 
                 <h3 className="text-sm font-bold text-slate-900">{detail.member.full_name}</h3>
                 <p className="text-[11px] text-slate-500">{detail.unit?.name ?? '—'}</p>
               </div>
-              <button type="button" onClick={() => setDetail(null)} className="p-1 rounded-full text-slate-400 hover:text-slate-600 hover:bg-slate-100">
+              <button title="Đóng" type="button" onClick={() => setDetail(null)} className="p-1 rounded-full text-slate-400 hover:text-slate-600 hover:bg-slate-100">
                 <X className="w-4 h-4" />
               </button>
             </div>
@@ -301,7 +308,8 @@ export const TaskParticipantsPanel: React.FC<{ taskId: string }> = ({ taskId }) 
                           </p>
                           <div className="grid grid-cols-3 gap-2">
                             {evidences.filter(e => e.evidence_type === 'photo').map(ev => (
-                              <button key={ev.id} type="button" onClick={() => setLightbox(ev)}
+                              <button key={ev.id} type="button" title="Xem minh chứng phóng to"
+                              onClick={() => setLightbox(ev)}
                                 className="border border-slate-200 rounded-lg overflow-hidden group relative">
                                 <img src={ev.url} alt={ev.file_name} className="w-full h-20 object-cover" />
                                 <span className="absolute inset-0 hidden group-hover:flex items-center justify-center bg-slate-900/40 text-white">
@@ -363,7 +371,7 @@ export const TaskParticipantsPanel: React.FC<{ taskId: string }> = ({ taskId }) 
             <img src={lightbox.url} alt={lightbox.file_name} className="w-full max-h-[75vh] object-contain rounded-xl bg-black" />
             <div className="flex items-center justify-between text-white text-xs mt-2">
               <span className="truncate">{lightbox.file_name}</span>
-              <button type="button" onClick={() => setLightbox(null)} className="inline-flex items-center gap-1 font-bold">
+              <button title="Đóng" type="button" onClick={() => setLightbox(null)} className="inline-flex items-center gap-1 font-bold">
                 <X className="w-4 h-4" /> Đóng
               </button>
             </div>

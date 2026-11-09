@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { supabase, isSupabaseConfigured, dataSource, clearAuthCache } from '../../data';
 import { LoginPage } from '../../pages/LoginPage';
 import { SignupPage } from '../../pages/SignupPage';
-import { Loader2 } from 'lucide-react';
+import { Loader2, AlertCircle, RefreshCw, LogOut } from 'lucide-react';
 
 /** Trạng thái hồ sơ của tài khoản đang đăng nhập. */
 type ProfileState = 'unknown' | 'has-profile' | 'needs-signup';
@@ -21,10 +21,14 @@ export const AuthGate: React.FC<{ children: React.ReactNode }> = ({ children }) 
   const [email, setEmail] = useState<string | null>(null);
   const [googleName, setGoogleName] = useState<string | undefined>(undefined);
   const [googleAvatar, setGoogleAvatar] = useState<string | undefined>(undefined);
+  // Đọc hồ sơ quá lâu (mạng lỗi / RPC treo) -> thoát spinner để người dùng
+  // còn thử lại hoặc đăng xuất, thay vì quay mãi.
+  const [profileTimedOut, setProfileTimedOut] = useState(false);
 
   /** Đọc profile + metadata Google của phiên hiện tại. */
   const loadProfileState = useCallback(async () => {
     if (!supabase) return;
+    setProfileTimedOut(false);
     const { data: auth } = await supabase.auth.getUser();
     if (!auth.user) { setProfileState('unknown'); return; }
 
@@ -81,6 +85,16 @@ export const AuthGate: React.FC<{ children: React.ReactNode }> = ({ children }) 
     };
   }, [needsAuth, loadProfileState]);
 
+  // Đồng hồ an toàn: đang chờ đọc hồ sơ quá 10s thì cho phép người dùng thoát ra.
+  useEffect(() => {
+    if (!needsAuth || !authed || profileState !== 'unknown') {
+      setProfileTimedOut(false);
+      return;
+    }
+    const t = setTimeout(() => setProfileTimedOut(true), 10_000);
+    return () => clearTimeout(t);
+  }, [needsAuth, authed, profileState]);
+
   const signOut = async () => {
     await supabase?.auth.signOut();
     setProfileState('unknown');
@@ -98,8 +112,40 @@ export const AuthGate: React.FC<{ children: React.ReactNode }> = ({ children }) 
     return <LoginPage onSuccess={() => setAuthed(true)} />;
   }
 
-  // Đã đăng nhập nhưng chưa xác định được hồ sơ: chờ đọc xong để tránh nháy form
+  // Đã đăng nhập nhưng chưa xác định được hồ sơ: chờ đọc xong để tránh nháy form.
+  // Quá 10 giây coi như đọc lỗi -> hiện màn hình có nút thử lại / đăng xuất.
   if (needsAuth && profileState === 'unknown') {
+    if (profileTimedOut) {
+      return (
+        <div className="min-h-screen flex items-center justify-center bg-slate-100 p-4">
+          <div className="w-full max-w-sm bg-white rounded-2xl shadow-lg border border-slate-200 p-6 text-center space-y-3">
+            <AlertCircle className="w-10 h-10 text-amber-500 mx-auto" />
+            <h1 className="text-sm font-bold text-slate-800">Không đọc được hồ sơ tài khoản</h1>
+            <p className="text-xs text-slate-500">
+              Máy chủ không phản hồi hoặc phiên đăng nhập đã hết hạn. Bạn có thể thử lại, hoặc đăng xuất rồi đăng nhập lại.
+            </p>
+            <div className="flex items-center justify-center gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => loadProfileState()}
+                title="Thử đọc lại hồ sơ từ máy chủ"
+                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-white bg-[#1F5FBF] hover:bg-[#154690] rounded-lg"
+              >
+                <RefreshCw className="w-3.5 h-3.5" /> Thử lại
+              </button>
+              <button
+                type="button"
+                onClick={signOut}
+                title="Đăng xuất khỏi tài khoản hiện tại"
+                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 rounded-lg"
+              >
+                <LogOut className="w-3.5 h-3.5" /> Đăng xuất
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-100">
         <Loader2 className="w-6 h-6 animate-spin text-[#1F5FBF]" />

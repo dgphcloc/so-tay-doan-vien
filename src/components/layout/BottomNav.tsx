@@ -97,7 +97,7 @@ export const BottomNav: React.FC = () => {
             <span>Chi đoàn</span>
           </NavLink>
 
-          <button
+          <button title="Thêm"
             type="button"
             onClick={() => setShowMoreMenu(true)}
             className="flex flex-col items-center justify-center py-2 px-1 text-[11px] font-medium text-slate-500 hover:text-slate-900 cursor-pointer"
@@ -121,7 +121,7 @@ export const BottomNav: React.FC = () => {
                   {currentRole}
                 </span>
               </div>
-              <button
+              <button title="Đóng"
                 type="button"
                 onClick={() => setShowMoreMenu(false)}
                 className="p-1 rounded-full text-slate-400 hover:text-slate-600 hover:bg-slate-100"
@@ -139,6 +139,7 @@ export const BottomNav: React.FC = () => {
                     <button
                       key={item.to}
                       type="button"
+                      title="Mở danh sách chức năng khác"
                       onClick={() => {
                         setShowMoreMenu(false);
                         navigate(item.to);

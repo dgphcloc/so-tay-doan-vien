@@ -92,7 +92,7 @@ export const AuditLogsPage: React.FC = () => {
           </p>
         </div>
 
-        <button
+        <button title="Xuất nhật ký (Excel)"
           type="button"
           onClick={handleExportLogs}
           className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 rounded-lg shadow-2xs transition-all cursor-pointer"

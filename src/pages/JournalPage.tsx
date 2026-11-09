@@ -192,7 +192,7 @@ export const JournalPage: React.FC = () => {
             <Lock className="w-3 h-3" /> Riêng tư — chỉ bạn xem được, kể cả cán bộ quản trị.
           </p>
         </div>
-        <button type="button" onClick={openAdd}
+        <button title="Thêm hoạt động" type="button" onClick={openAdd}
           className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-white bg-[#1F5FBF] hover:bg-[#1a4fa0] rounded-lg shrink-0">
           <Plus className="w-4 h-4" /> Thêm hoạt động
         </button>
@@ -215,7 +215,7 @@ export const JournalPage: React.FC = () => {
             <h3 className="text-sm font-bold text-slate-900">
               {editingId ? 'Sửa hoạt động' : 'Thêm hoạt động'}
             </h3>
-            <button type="button" onClick={() => setFormOpen(false)} className="p-1 text-slate-400 hover:text-slate-600">
+            <button title="Đóng" type="button" onClick={() => setFormOpen(false)} className="p-1 text-slate-400 hover:text-slate-600">
               <X className="w-4 h-4" />
             </button>
           </div>
@@ -237,7 +237,7 @@ export const JournalPage: React.FC = () => {
             </div>
             <div>
               <label className="font-bold text-slate-800 block mb-1">Ảnh ({images.length}/10):</label>
-              <button type="button" disabled={busy || images.length >= 10} onClick={addImage}
+              <button title="Thêm ảnh" type="button" disabled={busy || images.length >= 10} onClick={addImage}
                 className="inline-flex items-center gap-1.5 px-3 py-2 text-[11px] font-bold text-white bg-[#1F5FBF] rounded-lg disabled:opacity-50">
                 {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ImagePlus className="w-3.5 h-3.5" />}
                 Thêm ảnh
@@ -250,7 +250,7 @@ export const JournalPage: React.FC = () => {
               {images.map((img, i) => (
                 <div key={i} className="relative border border-slate-200 rounded-lg overflow-hidden bg-white">
                   <img src={img.url} alt={img.fileName} className="w-full h-20 object-cover" />
-                  <button type="button" onClick={() => setImages(prev => prev.filter((_, j) => j !== i))}
+                  <button title="Đóng" type="button" onClick={() => setImages(prev => prev.filter((_, j) => j !== i))}
                     className="absolute top-1 right-1 bg-white/90 rounded-full p-0.5 text-rose-600">
                     <X className="w-3.5 h-3.5" />
                   </button>
@@ -265,7 +265,7 @@ export const JournalPage: React.FC = () => {
               <label className="font-bold text-slate-800 flex items-center gap-1.5">
                 <Link2 className="w-3.5 h-3.5" /> Link ({links.length})
               </label>
-              <button type="button" onClick={() => setLinks(prev => [...prev, { url: '', note: '' }])}
+              <button title="+ Thêm link" type="button" onClick={() => setLinks(prev => [...prev, { url: '', note: '' }])}
                 className="px-2.5 py-1 text-[11px] font-bold text-slate-700 bg-white border border-slate-300 rounded-lg">
                 + Thêm link
               </button>
@@ -276,7 +276,7 @@ export const JournalPage: React.FC = () => {
                   <input value={l.url} onChange={e => setLinks(prev => prev.map((x, j) => j === i ? { ...x, url: e.target.value } : x))}
                     placeholder="https://..."
                     className="flex-1 p-1.5 bg-white border border-slate-300 rounded text-[11px]" />
-                  <button type="button" onClick={() => setLinks(prev => prev.filter((_, j) => j !== i))}
+                  <button title="Đóng" type="button" onClick={() => setLinks(prev => prev.filter((_, j) => j !== i))}
                     className="p-1 text-rose-600"><X className="w-3.5 h-3.5" /></button>
                 </div>
                 <input value={l.note} onChange={e => setLinks(prev => prev.map((x, j) => j === i ? { ...x, note: e.target.value } : x))}
@@ -296,9 +296,9 @@ export const JournalPage: React.FC = () => {
           </div>
 
           <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
-            <button type="button" onClick={() => setFormOpen(false)}
+            <button title="Huỷ" type="button" onClick={() => setFormOpen(false)}
               className="px-3 py-2 text-xs font-semibold text-slate-600 bg-slate-100 rounded-lg">Huỷ</button>
-            <button type="button" disabled={busy} onClick={handleSave}
+            <button title="Xác nhận" type="button" disabled={busy} onClick={handleSave}
               className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg disabled:opacity-60">
               {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
               {editingId ? 'Lưu thay đổi' : 'Thêm hoạt động'}
@@ -329,11 +329,11 @@ export const JournalPage: React.FC = () => {
                 <div className="flex items-center gap-1 shrink-0">
                   {deletingId === e.id ? (
                     <>
-                      <button type="button" onClick={() => handleDelete(e.id)}
+                      <button title="Xóa luôn?" type="button" onClick={() => handleDelete(e.id)}
                         className="px-2.5 py-1.5 text-[11px] font-bold text-white bg-rose-600 hover:bg-rose-700 rounded-lg">
                         Xóa luôn?
                       </button>
-                      <button type="button" onClick={() => setDeletingId(null)}
+                      <button title="Huỷ" type="button" onClick={() => setDeletingId(null)}
                         className="px-2.5 py-1.5 text-[11px] font-semibold text-slate-600 bg-slate-100 rounded-lg">
                         Huỷ
                       </button>
@@ -361,7 +361,8 @@ export const JournalPage: React.FC = () => {
                 <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 mt-3">
                   {e.images.map(img => (
                     <div key={img.id} className="relative group border border-slate-200 rounded-lg overflow-hidden">
-                      <button type="button" onClick={() => setLightbox(img.url)} className="block w-full">
+                      <button type="button" title="Xem ảnh phóng to"
+                    onClick={() => setLightbox(img.url)} className="block w-full">
                         <img src={img.url} alt={img.file_name ?? ''} className="w-full h-24 object-cover" loading="lazy" />
                       </button>
                       <button type="button" onClick={() => handleDownloadImage(img.url, img.file_name ?? '')}
@@ -407,11 +408,11 @@ export const JournalPage: React.FC = () => {
           <div className="max-w-3xl w-full" onClick={e => e.stopPropagation()}>
             <img src={lightbox} alt="" className="w-full max-h-[75vh] object-contain rounded-xl bg-black" />
             <div className="flex items-center justify-between mt-2 gap-2">
-              <button type="button" onClick={() => handleDownloadImage(lightbox, `anh-so-tay-${Date.now()}.jpg`)}
+              <button title="Tải ảnh" type="button" onClick={() => handleDownloadImage(lightbox, `anh-so-tay-${Date.now()}.jpg`)}
                 className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-white bg-[#1F5FBF] hover:bg-[#1a4fa0] rounded-lg">
                 <Download className="w-3.5 h-3.5" /> Tải ảnh
               </button>
-              <button type="button" onClick={() => setLightbox(null)}
+              <button title="Đóng" type="button" onClick={() => setLightbox(null)}
                 className="inline-flex items-center gap-1 px-3 py-2 text-xs font-bold text-white/80 hover:text-white">
                 <X className="w-4 h-4" /> Đóng
               </button>

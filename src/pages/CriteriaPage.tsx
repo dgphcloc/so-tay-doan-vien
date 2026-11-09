@@ -1,10 +1,10 @@
 import React, { useState, useMemo } from 'react';
 import { useApp } from '../context/AppContext';
+import { SubCriterionTasksPanel } from '../components/criteria/SubCriterionTasksPanel';
 import { useNavigate } from 'react-router-dom';
 import {
   Award,
   BookOpen,
-  Copy,
   Plus,
   Trash2,
   Edit2,
@@ -61,7 +61,6 @@ export const CriteriaPage: React.FC = () => {
     reorderSections,
     reorderCriteria,
     reorderSubCriteria,
-    cloneCriteriaSetFromPreviousYear,
     deleteCriteriaSet,
     restoreCriteriaSet,
     getCriteriaSetImpact,
@@ -355,19 +354,12 @@ export const CriteriaPage: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-2">
-          <button
+          <button title="Nhập từ Excel"
             type="button"
             onClick={() => setIsImportOpen(true)}
             className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-white bg-[#1F5FBF] hover:bg-[#154690] rounded-lg shadow-2xs transition-all cursor-pointer"
           >
             <Upload className="w-4 h-4" /> Nhập từ Excel
-          </button>
-          <button
-            type="button"
-            onClick={cloneCriteriaSetFromPreviousYear}
-            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 rounded-lg shadow-2xs transition-all cursor-pointer"
-          >
-            <Copy className="w-4 h-4 text-slate-500" /> Nhân bản từ năm trước
           </button>
         </div>
       </div>
@@ -464,7 +456,7 @@ export const CriteriaPage: React.FC = () => {
       {/* BỘ TIÊU CHÍ ĐÃ LƯU TRỮ — khôi phục được */}
       {archivedSets.length > 0 && (
         <div className="bg-slate-50 border border-slate-200 rounded-xl p-4">
-          <button
+          <button title="Bộ đã lưu trữ ()"
             type="button"
             onClick={() => setShowArchived(v => !v)}
             className="w-full flex items-center justify-between text-left"
@@ -489,7 +481,7 @@ export const CriteriaPage: React.FC = () => {
                     </p>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
-                    <button
+                    <button title="Khôi phục"
                       type="button"
                       onClick={async () => {
                         const res = await restoreCriteriaSet(cSet.id);
@@ -501,7 +493,7 @@ export const CriteriaPage: React.FC = () => {
                       <RotateCcw className="w-3.5 h-3.5" /> Khôi phục
                     </button>
                     {isAdmin && (
-                      <button
+                      <button title="Xóa vĩnh viễn"
                         type="button"
                         onClick={() => openPurgeModal(cSet.id, cSet.name)}
                         className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-bold text-rose-700 bg-rose-50 border border-rose-200 hover:bg-rose-100 rounded-lg"
@@ -550,7 +542,7 @@ export const CriteriaPage: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
-          <button
+          <button title="Chỉnh sửa"
             type="button"
             onClick={handleToggleLock}
             className={`inline-flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold cursor-pointer transition-all shadow-xs ${
@@ -574,7 +566,7 @@ export const CriteriaPage: React.FC = () => {
 
       {/* Tabs Chuyển đổi giữa Soạn bộ tiêu chí & Ma trận tiến độ chấm */}
       <div className="flex items-center gap-2 border-b border-slate-200">
-        <button
+        <button title="Soạn thảo Cây Tiêu chí"
           type="button"
           onClick={() => setActiveTab('editor')}
           className={`flex items-center gap-2 px-4 py-2.5 text-xs md:text-sm font-bold border-b-2 transition-all cursor-pointer ${
@@ -587,7 +579,7 @@ export const CriteriaPage: React.FC = () => {
           <span>Soạn thảo Cây Tiêu chí</span>
         </button>
 
-        <button
+        <button title="Tiến độ chấm (Ma trận Chi đoàn × Tiêu chí con)"
           type="button"
           onClick={() => setActiveTab('matrix')}
           className={`flex items-center gap-2 px-4 py-2.5 text-xs md:text-sm font-bold border-b-2 transition-all cursor-pointer ${
@@ -608,7 +600,7 @@ export const CriteriaPage: React.FC = () => {
           <div className="lg:col-span-5 bg-white rounded-xl border border-slate-200 shadow-xs p-4 space-y-4">
             <div className="flex items-center justify-between pb-3 border-b border-slate-100">
               <span className="font-bold text-slate-900 text-xs uppercase tracking-wider">Cấu trúc phân cấp</span>
-              <button
+              <button title="Thêm Phần"
                 type="button"
                 onClick={() => setIsAddSectionOpen(true)}
                 className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-bold text-[#1F5FBF] bg-blue-50 hover:bg-blue-100 rounded-lg cursor-pointer"
@@ -710,7 +702,7 @@ export const CriteriaPage: React.FC = () => {
 
                               <div className="flex items-center gap-1 shrink-0" onClick={e => e.stopPropagation()}>
                                 {critIdx > 0 && (
-                                  <button
+                                  <button title="Di chuyển lên"
                                     type="button"
                                     onClick={() => reorderCriteria(sec.id, critIdx, critIdx - 1)}
                                     className="p-0.5 text-slate-400 hover:text-slate-700"
@@ -719,7 +711,7 @@ export const CriteriaPage: React.FC = () => {
                                   </button>
                                 )}
                                 {critIdx < secCriteria.length - 1 && (
-                                  <button
+                                  <button title="Di chuyển xuống"
                                     type="button"
                                     onClick={() => reorderCriteria(sec.id, critIdx, critIdx + 1)}
                                     className="p-0.5 text-slate-400 hover:text-slate-700"
@@ -791,7 +783,7 @@ export const CriteriaPage: React.FC = () => {
 
                                     <div className="flex items-center gap-1 shrink-0" onClick={e => e.stopPropagation()}>
                                       {subIdx > 0 && (
-                                        <button
+                                        <button title="Di chuyển lên"
                                           type="button"
                                           onClick={() => reorderSubCriteria(crit.id, subIdx, subIdx - 1)}
                                           className="p-0.5 text-slate-400 hover:text-slate-700"
@@ -800,7 +792,7 @@ export const CriteriaPage: React.FC = () => {
                                         </button>
                                       )}
                                       {subIdx < critSubs.length - 1 && (
-                                        <button
+                                        <button title="Di chuyển xuống"
                                           type="button"
                                           onClick={() => reorderSubCriteria(crit.id, subIdx, subIdx + 1)}
                                           className="p-0.5 text-slate-400 hover:text-slate-700"
@@ -848,7 +840,7 @@ export const CriteriaPage: React.FC = () => {
                       Mã: {activeSubCriterion.id}
                     </h3>
                   </div>
-                  <button
+                  <button title="Lưu tiêu chí con"
                     type="submit"
                     className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-[#1F5FBF] hover:bg-[#154690] rounded-lg cursor-pointer shadow-xs"
                   >
@@ -1024,7 +1016,7 @@ export const CriteriaPage: React.FC = () => {
                           </label>
                         );
                       })}
-                      <button
+                      <button title="Bỏ chọn (áp dụng tất cả)"
                         type="button"
                         onClick={() => { setSubFormUnitTypeIds([]); setSubFormUnitIds([]); }}
                         className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white text-slate-600 text-[11px] font-semibold cursor-pointer"
@@ -1073,6 +1065,9 @@ export const CriteriaPage: React.FC = () => {
                     tick chi đoàn cụ thể để chỉ giao cho các chi đoàn đó.
                   </p>
                 </div>
+
+                {/* Nhiệm vụ phát sinh từ tiêu chí này */}
+                <SubCriterionTasksPanel subCriterionId={activeSubCriterion.id} />
               </form>
             ) : selectedType === 'criterion' && activeCriterion ? (
               <div className="space-y-4 text-xs">
@@ -1080,7 +1075,7 @@ export const CriteriaPage: React.FC = () => {
                   <span className="text-[10px] uppercase font-bold text-[#1F5FBF] bg-blue-50 px-2 py-0.5 rounded">
                     Tiêu chí lớn
                   </span>
-                  <button
+                  <button title="Lưu"
                     type="button"
                     onClick={() => {
                       updateCriterion(activeCriterion.id, activeCriterion.name);
@@ -1106,7 +1101,7 @@ export const CriteriaPage: React.FC = () => {
                   <span className="text-[10px] uppercase font-bold text-[#1F5FBF] bg-blue-50 px-2 py-0.5 rounded">
                     Phần tiêu chí
                   </span>
-                  <button
+                  <button title="Lưu"
                     type="button"
                     onClick={() => {
                       updateCriteriaSection(activeSection.id, activeSection.name);
@@ -1264,14 +1259,14 @@ export const CriteriaPage: React.FC = () => {
               />
             </div>
             <div className="flex justify-end gap-2 pt-2">
-              <button
+              <button title="Hủy"
                 type="button"
                 onClick={() => setIsAddSectionOpen(false)}
                 className="px-3 py-1.5 text-xs font-semibold text-slate-600 bg-slate-100 rounded-lg cursor-pointer"
               >
                 Hủy
               </button>
-              <button
+              <button title="Thêm phần"
                 type="button"
                 onClick={() => {
                   if (newSectionName.trim()) {
@@ -1305,14 +1300,14 @@ export const CriteriaPage: React.FC = () => {
               />
             </div>
             <div className="flex justify-end gap-2 pt-2">
-              <button
+              <button title="Hủy"
                 type="button"
                 onClick={() => setIsAddCriterionOpen(false)}
                 className="px-3 py-1.5 text-xs font-semibold text-slate-600 bg-slate-100 rounded-lg cursor-pointer"
               >
                 Hủy
               </button>
-              <button
+              <button title="Thêm tiêu chí"
                 type="button"
                 onClick={() => {
                   if (newCriterionName.trim() && newCriterionSectionId) {
@@ -1357,14 +1352,14 @@ export const CriteriaPage: React.FC = () => {
               />
             </div>
             <div className="flex justify-end gap-2 pt-2">
-              <button
+              <button title="Hủy"
                 type="button"
                 onClick={() => setIsAddSubOpen(false)}
                 className="px-3 py-1.5 font-semibold text-slate-600 bg-slate-100 rounded-lg cursor-pointer"
               >
                 Hủy
               </button>
-              <button
+              <button title="Thêm tiêu chí con"
                 type="button"
                 onClick={() => {
                   if (newSubCondition.trim() && newSubCriterionId) {
@@ -1402,7 +1397,7 @@ export const CriteriaPage: React.FC = () => {
               <h3 className="text-base font-bold text-slate-900 flex items-center gap-1.5">
                 <Archive className="w-4 h-4 text-amber-600" /> Lưu trữ bộ tiêu chí
               </h3>
-              <button type="button" onClick={() => setArchiveTarget(null)}
+              <button title="Đóng" type="button" onClick={() => setArchiveTarget(null)}
                 className="p-1 rounded-full text-slate-400 hover:text-slate-600 hover:bg-slate-100">
                 <X className="w-4 h-4" />
               </button>
@@ -1421,11 +1416,12 @@ export const CriteriaPage: React.FC = () => {
             </div>
 
             <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
-              <button type="button" onClick={() => setArchiveTarget(null)}
+              <button title="Huỷ" type="button" onClick={() => setArchiveTarget(null)}
                 className="px-3 py-2 text-xs font-semibold text-slate-600 bg-slate-100 rounded-lg">Huỷ</button>
               <button
                 type="button"
                 disabled={archiving}
+                title="Lưu trữ bộ tiêu chí (ẩn khỏi danh sách, giữ nguyên điểm và minh chứng)"
                 onClick={handleArchiveCriteriaSet}
                 className="px-4 py-2 text-xs font-bold text-white bg-amber-600 hover:bg-amber-700 rounded-lg disabled:opacity-60"
               >
@@ -1444,7 +1440,7 @@ export const CriteriaPage: React.FC = () => {
               <h3 className="text-base font-bold text-slate-900 flex items-center gap-1.5">
                 <Trash2 className="w-4 h-4 text-rose-600" /> Xóa vĩnh viễn bộ tiêu chí
               </h3>
-              <button type="button" onClick={() => { setPurgeTarget(null); setPurgeConfirmName(''); }}
+              <button title="Đóng" type="button" onClick={() => { setPurgeTarget(null); setPurgeConfirmName(''); }}
                 className="p-1 rounded-full text-slate-400 hover:text-slate-600 hover:bg-slate-100">
                 <X className="w-4 h-4" />
               </button>
@@ -1487,10 +1483,11 @@ export const CriteriaPage: React.FC = () => {
             </div>
 
             <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
-              <button type="button" onClick={() => { setPurgeTarget(null); setPurgeConfirmName(''); }}
+              <button title="Huỷ" type="button" onClick={() => { setPurgeTarget(null); setPurgeConfirmName(''); }}
                 className="px-3 py-2 text-xs font-semibold text-slate-600 bg-slate-100 rounded-lg">Huỷ</button>
               <button
                 type="button"
+                title="Xóa vĩnh viễn bộ tiêu chí cùng toàn bộ bài chấm và minh chứng"
                 disabled={purgeConfirmName.trim() !== purgeTarget.name.trim() || purging || loadingImpact}
                 onClick={handlePurgeCriteriaSet}
                 className={`px-4 py-2 text-xs font-bold text-white rounded-lg ${

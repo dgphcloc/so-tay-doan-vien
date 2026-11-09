@@ -20,6 +20,7 @@ import {
   X,
   Phone,
   ShieldAlert,
+  Sparkles,
 } from 'lucide-react';
 import {
   ResponsiveContainer,
@@ -57,6 +58,11 @@ export const DashboardPage: React.FC = () => {
     getMemberById,
     getTaskById,
     calculateUnitScores,
+    unitTypes,
+    profiles,
+    criteriaSets,
+    subCriteria,
+    unitCommittees,
   } = useApp();
 
   const navigate = useNavigate();
@@ -173,30 +179,20 @@ export const DashboardPage: React.FC = () => {
       });
   }, [tasks, taskUnits, taskResults]);
 
-  // 4. Biểu đồ Điểm chi đoàn (Top 10 / Cuối 5)
-  const unitScores = useMemo(() => {
+  // 4. Biểu đồ Tỷ lệ hoàn thành nhiệm vụ theo Chi đoàn (%)
+  const unitTaskRates = useMemo(() => {
     const scores = calculateUnitScores();
-    scores.sort((a, b) => b.totalScore - a.totalScore);
-    if (chartView === 'top10') {
-      return scores.slice(0, 10).map(s => ({
-        name: s.unit.name.replace('Chi đoàn ', ''),
-        fullName: s.unit.name,
-        score: s.totalScore,
-        max: s.maxPossible,
-        unit: s.unit,
-      }));
-    } else {
-      return scores
-        .slice(-5)
-        .reverse()
-        .map(s => ({
-          name: s.unit.name.replace('Chi đoàn ', ''),
-          fullName: s.unit.name,
-          score: s.totalScore,
-          max: s.maxPossible,
-          unit: s.unit,
-        }));
-    }
+    // Sắp xếp theo tỷ lệ hoàn thành (%)
+    scores.sort((a, b) => b.completionRate - a.completionRate);
+    const targetScores = chartView === 'top10' ? scores.slice(0, 10) : scores.slice(-5).reverse();
+    return targetScores.map(s => ({
+      name: s.unit.name.replace('Chi đoàn ', ''),
+      fullName: s.unit.name,
+      rate: s.completionRate,
+      completed: s.taskCount,
+      total: s.taskAssignedCount,
+      unit: s.unit,
+    }));
   }, [calculateUnitScores, chartView]);
 
   // 5. Lưới chi đoàn × việc (đang chạy hoặc tiêu chí con sắp hạn)
@@ -271,7 +267,7 @@ export const DashboardPage: React.FC = () => {
 
         <div className="flex items-center gap-3 self-start sm:self-auto">
           <span className="text-xs text-slate-500 font-medium">Cập nhật lúc {lastUpdated}</span>
-          <button
+          <button title="Làm mới"
             type="button"
             onClick={refreshData}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 border border-slate-200 rounded-lg shadow-2xs transition-colors cursor-pointer active:scale-95"
@@ -531,13 +527,13 @@ export const DashboardPage: React.FC = () => {
           </div>
         </div>
 
-        {/* Cột phải: Biểu đồ cột NGANG "Điểm chi đoàn" — đoàn viên không xem được */}
+        {/* Cột phải: Biểu đồ cột NGANG "Tiến độ nhiệm vụ chi đoàn" — đoàn viên không xem được */}
         {!canViewScores ? (
           <div className="bg-white p-5 rounded-xl border border-slate-200/90 shadow-xs flex flex-col items-center justify-center text-center min-h-[18rem]">
             <Building2 className="w-8 h-8 text-slate-300 mb-2" />
-            <h2 className="text-sm font-bold text-slate-700">Điểm thi đua của chi đoàn</h2>
+            <h2 className="text-sm font-bold text-slate-700">Tiến độ nhiệm vụ của chi đoàn</h2>
             <p className="text-xs text-slate-500 mt-1 max-w-xs">
-              Chỉ bí thư chi đoàn và bí thư Đoàn xã xem được điểm thi đua. Liên hệ bí thư chi đoàn nếu cần biết.
+              Chỉ bí thư chi đoàn và bí thư Đoàn xã xem được tiến độ tổng hợp. Liên hệ bí thư chi đoàn nếu cần biết.
             </p>
           </div>
         ) : (
@@ -545,28 +541,28 @@ export const DashboardPage: React.FC = () => {
             <div className="flex items-center justify-between pb-3 border-b border-slate-100 mb-3">
               <div className="flex items-center gap-2">
                 <Building2 className="w-4 h-4 text-[#1F5FBF]" />
-                <h2 className="text-sm md:text-base font-bold text-slate-800">Điểm chi đoàn (2026)</h2>
+                <h2 className="text-sm md:text-base font-bold text-slate-800">Tỷ lệ hoàn thành nhiệm vụ (%)</h2>
               </div>
 
               {/* Toggle Top 10 / Cuối 5 */}
               <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-0.5 text-xs">
-                <button
+                <button title="Dẫn đầu 10"
                   type="button"
                   onClick={() => setChartView('top10')}
                   className={`px-2.5 py-1 rounded-md font-semibold transition-all cursor-pointer ${
                     chartView === 'top10' ? 'bg-white text-[#1F5FBF] shadow-xs' : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
-                  Top 10
+                  Dẫn đầu 10
                 </button>
-                <button
+                <button title="Chậm tiến độ (5)"
                   type="button"
                   onClick={() => setChartView('bottom5')}
                   className={`px-2.5 py-1 rounded-md font-semibold transition-all cursor-pointer ${
                     chartView === 'bottom5' ? 'bg-white text-rose-600 shadow-xs' : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
-                  Cuối 5
+                  Chậm tiến độ (5)
                 </button>
               </div>
             </div>
@@ -576,7 +572,7 @@ export const DashboardPage: React.FC = () => {
             <div className="h-64 sm:h-72 w-full flex-1">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart
-                  data={unitScores}
+                  data={unitTaskRates}
                   layout="vertical"
                   margin={{ top: 5, right: 30, left: 10, bottom: 5 }}
                   onClick={(data: any) => {
@@ -586,10 +582,13 @@ export const DashboardPage: React.FC = () => {
                     }
                   }}
                 >
-                  <XAxis type="number" domain={[0, 60]} tick={{ fontSize: 11 }} />
+                  <XAxis type="number" domain={[0, 100]} tick={{ fontSize: 11 }} unit="%" />
                   <YAxis dataKey="name" type="category" width={85} tick={{ fontSize: 11 }} />
                   <Tooltip
-                    formatter={(value: any) => [`${value} điểm`, 'Tổng điểm']}
+                    formatter={(value: any, name: any, item: any) => {
+                      const p = item.payload;
+                      return [`${value}% (${p.completed}/${p.total} việc)`, 'Tỷ lệ hoàn thành'];
+                    }}
                     labelFormatter={(label: any, payload: any) => {
                       if (payload && payload[0]) {
                         return payload[0].payload.fullName;
@@ -598,12 +597,12 @@ export const DashboardPage: React.FC = () => {
                     }}
                     contentStyle={{ borderRadius: '8px', fontSize: '12px' }}
                   />
-                  <ReferenceLine x={50} stroke="#10b981" strokeDasharray="3 3" label={{ value: 'Mốc 50đ', fill: '#10b981', fontSize: 10, position: 'top' }} />
-                  <Bar dataKey="score" radius={[0, 6, 6, 0]} cursor="pointer">
-                    {unitScores.map((entry, index) => (
+                  <ReferenceLine x={80} stroke="#10b981" strokeDasharray="3 3" label={{ value: 'Mốc 80%', fill: '#10b981', fontSize: 10, position: 'top' }} />
+                  <Bar dataKey="rate" radius={[0, 6, 6, 0]} cursor="pointer">
+                    {unitTaskRates.map((entry, index) => (
                       <Cell
                         key={`cell-${index}`}
-                        fill={chartView === 'top10' ? (entry.score >= 50 ? '#1F5FBF' : '#3b82f6') : '#ef4444'}
+                        fill={chartView === 'top10' ? (entry.rate >= 80 ? '#1F5FBF' : '#3b82f6') : '#ef4444'}
                       />
                     ))}
                   </Bar>
@@ -616,7 +615,7 @@ export const DashboardPage: React.FC = () => {
 
       {/* 4) "Lưới chi đoàn × việc" (thu gọn mặc định) */}
       <div className="bg-white rounded-xl border border-slate-200/90 shadow-xs overflow-hidden">
-        <button
+        <button title="Mở rộng / Thu gọn"
           type="button"
           onClick={() => setIsGridExpanded(!isGridExpanded)}
           className="w-full p-4 sm:p-5 flex items-center justify-between text-left hover:bg-slate-50/80 transition-colors cursor-pointer"
@@ -762,7 +761,7 @@ export const DashboardPage: React.FC = () => {
                 <h3 className="text-lg font-bold text-slate-900 mt-1">{selectedUnit.name}</h3>
                 <p className="text-xs text-slate-500">{selectedUnit.note || 'Xã Hòa Bình'}</p>
               </div>
-              <button
+              <button title="Đóng"
                 type="button"
                 onClick={() => setSelectedUnit(null)}
                 className="p-1 rounded-full text-slate-400 hover:text-slate-600 hover:bg-slate-100 cursor-pointer"
@@ -773,9 +772,12 @@ export const DashboardPage: React.FC = () => {
 
             <div className="grid grid-cols-2 gap-3 text-xs">
               <div className="p-3 bg-slate-50 rounded-xl">
-                <span className="text-slate-400 block font-medium">Số lượng đoàn viên</span>
+                <span className="text-slate-400 block font-medium">Đoàn viên đang hoạt động</span>
                 <span className="text-lg font-extrabold text-slate-900 mt-0.5 block">
-                  {selectedUnit.union_member_count} đoàn viên
+                  {members.filter(m => m.is_active && m.unit_id === selectedUnit.id).length} đoàn viên
+                </span>
+                <span className="text-[10px] text-slate-400">
+                  Khai báo: {selectedUnit.union_member_count}
                 </span>
               </div>
               <div className="p-3 bg-slate-50 rounded-xl">
@@ -810,14 +812,14 @@ export const DashboardPage: React.FC = () => {
             </div>
 
             <div className="flex items-center justify-end gap-2 pt-2">
-              <button
+              <button title="Đóng"
                 type="button"
                 onClick={() => setSelectedUnit(null)}
                 className="px-4 py-2 text-xs font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg cursor-pointer transition-colors"
               >
                 Đóng
               </button>
-              <button
+              <button title="Xem danh sách đoàn viên"
                 type="button"
                 onClick={() => {
                   setSelectedUnit(null);

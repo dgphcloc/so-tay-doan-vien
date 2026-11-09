@@ -111,7 +111,7 @@ export const TaskCriteriaModal: React.FC<{
                 : 'Chưa chọn bộ tiêu chí mặc định — vào Cấu hình để chọn trước.'}
             </p>
           </div>
-          <button type="button" onClick={onClose} className="p-1 rounded-full text-slate-400 hover:text-slate-600 hover:bg-slate-100">
+          <button title="Đóng" type="button" onClick={onClose} className="p-1 rounded-full text-slate-400 hover:text-slate-600 hover:bg-slate-100">
             <X className="w-4 h-4" />
           </button>
         </div>
@@ -152,7 +152,7 @@ export const TaskCriteriaModal: React.FC<{
                           const checked = selected[sc.id] !== undefined;
                           return (
                             <div key={sc.id} className={`p-2.5 flex items-start gap-2 ${checked ? 'bg-blue-50/40' : ''}`}>
-                              <button
+                              <button title="Xác nhận"
                                 type="button"
                                 onClick={() => toggle(sc.id, sc.max_score)}
                                 className={`mt-0.5 w-4 h-4 rounded border flex items-center justify-center shrink-0 ${
@@ -188,9 +188,9 @@ export const TaskCriteriaModal: React.FC<{
             <div className="p-3 border-t border-slate-100 flex items-center justify-between gap-2">
               <span className="text-[11px] text-slate-500">Đã chọn <b className="text-[#1F5FBF]">{totalSelected}</b> tiêu chí</span>
               <div className="flex items-center gap-2">
-                <button type="button" onClick={onClose}
+                <button title="Huỷ" type="button" onClick={onClose}
                   className="px-3 py-2 text-xs font-semibold text-slate-600 bg-slate-100 rounded-lg">Huỷ</button>
-                <button type="button" disabled={busy} onClick={handleSave}
+                <button title="Lưu tiêu chí" type="button" disabled={busy} onClick={handleSave}
                   className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-[#1F5FBF] hover:bg-[#1a4fa0] rounded-lg disabled:opacity-60">
                   {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
                   Lưu tiêu chí

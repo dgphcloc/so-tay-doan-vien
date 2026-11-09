@@ -1,5 +1,7 @@
 import React, { useState, useMemo, useRef } from 'react';
 import { useApp } from '../context/AppContext';
+import { Avatar } from '../components/common/Avatar';
+import { useConfirm } from '../components/common/ConfirmDialog';
 import {
   Users,
   Search,
@@ -25,11 +27,19 @@ import {
   Trash2,
   Edit2,
   ExternalLink,
+  Loader2,
+  Check,
+  PowerOff,
+  Power,
 } from 'lucide-react';
 import { Member, Gender, CurrentPosition, PoliticalTheoryLevel } from '../types';
 import { formatDateVN } from '../mock/data';
 import { removeVietnameseTones, calculateAge, isMemberMatured } from '../utils/vietnamese';
 import { exportExcel } from '../utils/exportExcel';
+import { downloadMemberTemplate } from '../utils/memberTemplate';
+import { supabase } from '../data';
+import type { ParseResult, ParsedMemberRow } from '../utils/membersImport';
+import type { PartyTargetStatus } from '../types';
 
 export const MembersPage: React.FC = () => {
   const {
@@ -42,25 +52,60 @@ export const MembersPage: React.FC = () => {
     yearlySettings,
     ethnicities,
     currentRole,
+    currentMember,
     createMember,
     updateMember,
     deleteMember,
+    setMemberActive,
     bulkImportMembers,
+    createUnit,
     getUnitById,
     getTaskById,
     showToast,
+    reviewMemberRegistration,
+    toggleMemberNewlyAdmitted,
+    addCommitteeMember,
   } = useApp();
+
+  const { confirm } = useConfirm();
+
+  const isSecretary = currentRole === 'unit_secretary';
+  const isAdmin = currentRole === 'super_admin' || currentRole === 'admin';
+  const myUnitId = currentMember?.unit_id || '';
+
+  // Modal từ chối đoàn viên tự đăng ký
+  const [rejectingMember, setRejectingMember] = useState<Member | null>(null);
+  const [rejectReason, setRejectReason] = useState('');
+  const [isReviewingReg, setIsReviewingReg] = useState(false);
+
+  // Modal Bổ nhiệm vào Ban Chấp hành
+  const [appointMember, setAppointMember] = useState<Member | null>(null);
+  const [appointPosition, setAppointPosition] = useState<'secretary' | 'deputy_secretary' | 'committee_member'>('committee_member');
+  const [appointIsStanding, setAppointIsStanding] = useState(false);
+  const [appointTermStart, setAppointTermStart] = useState(new Date().toISOString().slice(0, 10));
+  // Cấp bộ được bổ nhiệm: 'unit' = chi đoàn của đoàn viên; 'commune' = BCH Đoàn xã
+  const [appointScope, setAppointScope] = useState<'unit' | 'commune'>('unit');
+  const [appointError, setAppointError] = useState('');
+  const [isAppointing, setIsAppointing] = useState(false);
 
   // Search & Filter
   const [search, setSearch] = useState('');
   const [selectedUnit, setSelectedUnit] = useState('all');
   const [genderFilter, setGenderFilter] = useState<'all' | 'male' | 'female'>('all');
   const [positionFilter, setPositionFilter] = useState<'all' | 'secretary' | 'deputy_secretary' | 'member'>('all');
-  const [partyFilter, setPartyFilter] = useState<'all' | 'party' | 'non_party'>('all');
+  const [partyFilter, setPartyFilter] = useState<'all' | 'party' | 'elite' | 'non_party'>('all');
   const [activeFilter, setActiveFilter] = useState<'all' | 'active' | 'inactive'>('active');
   const [maturedFilter, setMaturedFilter] = useState<'all' | 'matured' | 'unmatured'>('all');
   const [ageMin, setAgeMin] = useState<string>('');
   const [ageMax, setAgeMax] = useState<string>('');
+
+  // Phân trang danh sách đoàn viên
+  const [currentPage, setCurrentPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
+
+  React.useEffect(() => {
+    setCurrentPage(1);
+  }, [search, selectedUnit, genderFilter, positionFilter, partyFilter, activeFilter, maturedFilter, ageMin, ageMax]);
 
   // Unmasked phone numbers toggle (id set)
   const [unmaskedPhoneIds, setUnmaskedPhoneIds] = useState<Set<string>>(new Set());
@@ -80,22 +125,26 @@ export const MembersPage: React.FC = () => {
   const [formJoinedDate, setFormJoinedDate] = useState('2018-03-26');
   const [formUnitId, setFormUnitId] = useState(units[0]?.id || '');
   const [formPosition, setFormPosition] = useState<CurrentPosition>('member');
+  const [formIsActive, setFormIsActive] = useState<boolean>(true);
   const [formEducation, setFormEducation] = useState('12/12');
   const [formSpecialization, setFormSpecialization] = useState('Nông nghiệp sạch');
   const [formTheory, setFormTheory] = useState<PoliticalTheoryLevel>('other');
   const [formReligion, setFormReligion] = useState('Không');
   const [formIsParty, setFormIsParty] = useState(false);
+  const [formIsElite, setFormIsElite] = useState(false);
+  const [formEliteDate, setFormEliteDate] = useState('');
+  const [formPartyStatus, setFormPartyStatus] = useState<PartyTargetStatus>('none');
   const [formEthnicityId, setFormEthnicityId] = useState('kinh');
   const [formJob, setFormJob] = useState('Lao động tự do');
 
   // Excel Import Wizard 4 Steps
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [importStep, setImportStep] = useState<1 | 2 | 3 | 4>(1);
-  const [parsedRows, setParsedRows] = useState<Array<{
-    rowNum: number; full_name: string; birth_date: string; phone: string;
-    joined_date: string; unit_name: string; gender: 'male' | 'female' | 'other';
-    isValid: boolean; isDuplicate: boolean; error: string;
-  }>>([]);
+  const [importResult, setImportResult] = useState<ParseResult | null>(null);
+  const parsedRows: ParsedMemberRow[] = importResult?.rows || [];
+  const [selectedRowNums, setSelectedRowNums] = useState<Set<number>>(new Set());
+  const [previewPage, setPreviewPage] = useState(1);
+  const PREVIEW_PAGE_SIZE = 15;
   const [importFileName, setImportFileName] = useState('');
   const [importing, setImporting] = useState(false);
   const importFileRef = useRef<HTMLInputElement>(null);
@@ -107,8 +156,12 @@ export const MembersPage: React.FC = () => {
     try {
       const { parseMembersWorkbook } = await import('../utils/membersImport');
       const buf = await file.arrayBuffer();
-      const rows = await parseMembersWorkbook(buf, units, members);
-      setParsedRows(rows);
+      const result = await parseMembersWorkbook(buf, units, members);
+      setImportResult(result);
+      // Mặc định chọn tất cả dòng hợp lệ (không lỗi, không trùng)
+      const validNums = new Set(result.rows.filter(r => r.isValid && !r.isDuplicate).map(r => r.rowNum));
+      setSelectedRowNums(validNums);
+      setPreviewPage(1);
       setImportFileName(file.name);
       setImportStep(3);
     } catch (e) {
@@ -138,6 +191,15 @@ export const MembersPage: React.FC = () => {
     return profiles.find(p => p.member_id === memberId)?.email ?? '';
   };
 
+  // Danh sách hồ sơ tự đăng ký đang chờ Bí thư chi đoàn hoặc Admin duyệt
+  const pendingMembers = useMemo(() => {
+    return members.filter(m => {
+      if (m.approval_status !== 'pending') return false;
+      if (isSecretary && m.unit_id !== myUnitId) return false;
+      return true;
+    });
+  }, [members, isSecretary, myUnitId]);
+
   // Mask Phone helper
   const getDisplayPhone = (id: string, phone: string) => {
     if (isStaff) {
@@ -158,6 +220,7 @@ export const MembersPage: React.FC = () => {
       if (genderFilter !== 'all' && m.gender !== genderFilter) return false;
       if (positionFilter !== 'all' && m.current_position !== positionFilter) return false;
       if (partyFilter === 'party' && !m.is_party_member) return false;
+      if (partyFilter === 'elite' && !m.is_elite_member) return false;
       if (partyFilter === 'non_party' && m.is_party_member) return false;
       if (activeFilter === 'active' && !m.is_active) return false;
       if (activeFilter === 'inactive' && m.is_active) return false;
@@ -206,11 +269,15 @@ export const MembersPage: React.FC = () => {
     setFormJoinedDate('2018-03-26');
     setFormUnitId(units[0]?.id || '');
     setFormPosition('member');
+    setFormIsActive(true);
     setFormEducation('12/12');
     setFormSpecialization('Trồng trọt công nghệ cao');
     setFormTheory('other');
     setFormReligion('Không');
     setFormIsParty(false);
+    setFormIsElite(false);
+    setFormEliteDate('');
+    setFormPartyStatus('none');
     setFormEthnicityId('kinh');
     setFormJob('Lao động tự do');
     setIsMemberModalOpen(true);
@@ -226,11 +293,15 @@ export const MembersPage: React.FC = () => {
     setFormJoinedDate(member.joined_date);
     setFormUnitId(member.unit_id);
     setFormPosition(member.current_position);
+    setFormIsActive(member.is_active);
     setFormEducation(member.education_grade);
     setFormSpecialization(member.specialization || '');
     setFormTheory(member.political_theory_level);
     setFormReligion(member.religion);
     setFormIsParty(member.is_party_member);
+    setFormIsElite(!!member.is_elite_member);
+    setFormEliteDate(member.elite_date || '');
+    setFormPartyStatus(member.party_target_status || (member.is_party_member ? 'admitted' : 'none'));
     setFormEthnicityId(member.ethnicity_id);
     setFormJob(member.current_job);
     setIsMemberModalOpen(true);
@@ -244,6 +315,24 @@ export const MembersPage: React.FC = () => {
       return;
     }
 
+    // Ràng buộc: mỗi chi đoàn chỉ được có 1 Bí thư đang giữ chức
+    if (formPosition === 'secretary') {
+      const existingSecretary = members.find(
+        m => m.unit_id === formUnitId
+          && m.current_position === 'secretary'
+          && m.is_active
+          && m.id !== editingMemberId
+      );
+      if (existingSecretary) {
+        showToast({
+          title: 'Chi đoàn đã có Bí thư',
+          description: `${existingSecretary.full_name} đang là Bí thư ${getUnitById(formUnitId)?.name || 'chi đoàn này'}. Hãy đổi chức vụ người đó trước khi bổ nhiệm Bí thư mới.`,
+          type: 'error',
+        });
+        return;
+      }
+    }
+
     if (editingMemberId) {
       await updateMember(editingMemberId, {
         full_name: formFullName.trim(),
@@ -253,11 +342,15 @@ export const MembersPage: React.FC = () => {
         joined_date: formJoinedDate,
         unit_id: formUnitId,
         current_position: formPosition,
+        is_active: formIsActive,
         education_grade: formEducation,
         specialization: formSpecialization,
         political_theory_level: formTheory,
         religion: formReligion,
         is_party_member: formIsParty,
+        is_elite_member: formIsElite || formIsParty,
+        elite_date: formIsElite ? formEliteDate : undefined,
+        party_target_status: formIsParty ? 'admitted' : formPartyStatus,
         ethnicity_id: formEthnicityId,
         current_job: formJob,
       });
@@ -277,8 +370,11 @@ export const MembersPage: React.FC = () => {
         is_active: true,
         religion: formReligion,
         is_party_member: formIsParty,
+        is_elite_member: formIsElite || formIsParty,
+        elite_date: formIsElite ? formEliteDate : undefined,
+        party_target_status: formIsParty ? 'admitted' : formPartyStatus,
         ethnicity_id: formEthnicityId,
-        avatar_url: `https://i.pravatar.cc/80?u=mem_${Date.now()}`,
+        avatar_url: '',
         current_job: formJob,
         central_member_code: `DNVN-2026-${Math.floor(10000 + Math.random() * 90000)}`,
       });
@@ -302,6 +398,7 @@ export const MembersPage: React.FC = () => {
       phone: getDisplayPhone(m.id, m.phone),
       email: getMemberEmail(m.id),
       party: m.is_party_member ? 'Đảng viên' : '',
+      elite: m.is_elite_member ? 'Ưu tú' : '',
       status: m.is_active ? 'Hoạt động' : 'Ngừng hoạt động',
     }));
     await exportExcel({
@@ -319,6 +416,7 @@ export const MembersPage: React.FC = () => {
         { header: 'Số điện thoại', key: 'phone', width: 14 },
         ...(canSeeEmail ? [{ header: 'Email', key: 'email', width: 26 }] : []),
         { header: 'Đảng viên', key: 'party', width: 11 },
+        { header: 'ĐV Ưu tú', key: 'elite', width: 12 },
         { header: 'Trạng thái', key: 'status', width: 16 },
       ],
       rows,
@@ -332,38 +430,105 @@ export const MembersPage: React.FC = () => {
 
   // Confirm Import
   const handleConfirmImport = async () => {
-    const validRows = parsedRows.filter(r => r.isValid && !r.isDuplicate);
-    const newMembersToImport = validRows.map(r => ({
-      full_name: r.full_name,
-      birth_date: r.birth_date,
-      gender: r.gender,
-      phone: r.phone,
-      joined_date: r.joined_date,
-      unit_id: units.find(u => u.name === r.unit_name)?.id ?? units[0].id,
-      current_position: 'member' as const,
-      education_grade: '12/12',
-      political_theory_level: 'other' as const,
-      is_active: true,
-      religion: 'Không',
-      is_party_member: false,
-      ethnicity_id: 'kinh',
-      avatar_url: `https://i.pravatar.cc/80?u=import_${Math.random()}`,
-      current_job: 'Thanh niên nông thôn',
-      central_member_code: '',
-    }));
-
-    if (newMembersToImport.length === 0) {
-      showToast({ title: 'Không có dòng hợp lệ để nhập', type: 'error' });
+    if (!importResult) return;
+    // Lọc theo các dòng được tích chọn VÀ hợp lệ
+    const rowsToImport = importResult.rows.filter(r => selectedRowNums.has(r.rowNum) && r.isValid);
+    if (rowsToImport.length === 0) {
+      showToast({ title: 'Vui lòng chọn ít nhất một đoàn viên hợp lệ để nhập', type: 'error' });
       return;
     }
+
     setImporting(true);
-    const count = await bulkImportMembers(newMembersToImport);
-    setImporting(false);
-    showToast({ title: `Đã nhập ${count} đoàn viên`, type: 'success' });
-    setIsImportModalOpen(false);
-    setImportStep(1);
-    setParsedRows([]);
-    setImportFileName('');
+    try {
+      // 1. Tự động tạo Chi đoàn mới nếu có
+      if (supabase && importResult.newUnitsToCreate.length > 0) {
+        for (const newUnitName of importResult.newUnitsToCreate) {
+          const { data: existU } = await supabase.from('units').select('id').ilike('name', newUnitName).maybeSingle();
+          if (!existU) {
+            await createUnit({
+              name: newUnitName,
+              unit_type_id: 'other',
+              note: 'Tạo tự động từ file Excel',
+            });
+          }
+        }
+      }
+
+      // Lấy danh sách chi đoàn mới nhất trực tiếp từ DB
+      const unitMap = new Map<string, string>();
+      if (supabase) {
+        const { data: latestUnits } = await supabase.from('units').select('id, name');
+        (latestUnits ?? []).forEach(u => unitMap.set(String(u.name).toLowerCase().trim(), String(u.id)));
+      } else {
+        units.forEach(u => unitMap.set(u.name.toLowerCase().trim(), u.id));
+      }
+
+      // Map dân tộc
+      const ethMap = new Map<string, string>();
+      ethnicities.forEach(e => ethMap.set(e.name.toLowerCase().trim(), e.id));
+      const defaultEthId = ethnicities[0]?.id || '1';
+
+      // 2. Chuyển đổi dữ liệu chuẩn (đặc biệt education_grade phải là số smallint 1..12)
+      const newMembersToImport = rowsToImport.map(r => {
+        const uKey = (r.unit_name || '').toLowerCase().trim();
+        const assignedUnitId = unitMap.get(uKey) || units[0]?.id || '1';
+        const eKey = (r.ethnicity_name || 'Kinh').toLowerCase().trim();
+        const assignedEthId = ethMap.get(eKey) || defaultEthId;
+
+        // Chuẩn hóa education_grade thành số nguyên từ 1 đến 12 (DB smallint)
+        let gradeNum = 12;
+        const matchDigits = String(r.education_grade || '').match(/^(\d{1,2})/);
+        if (matchDigits) {
+          const parsed = parseInt(matchDigits[1], 10);
+          if (parsed >= 1 && parsed <= 12) gradeNum = parsed;
+        }
+
+        return {
+          full_name: r.full_name,
+          birth_date: r.birth_date,
+          gender: r.gender,
+          phone: r.phone,
+          joined_date: r.joined_date || `${new Date().getFullYear()}-03-26`,
+          unit_id: assignedUnitId,
+          current_position: r.current_position,
+          education_grade: gradeNum as unknown as string,
+          specialization: r.specialization || undefined,
+          political_theory_level: r.political_theory_level,
+          is_active: true,
+          religion: r.religion || 'Không',
+          is_party_member: r.is_party_member,
+          is_elite_member: r.is_elite_member || r.is_party_member,
+          party_target_status: r.is_party_member ? ('admitted' as PartyTargetStatus) : r.is_elite_member ? ('elite' as PartyTargetStatus) : ('none' as PartyTargetStatus),
+          ethnicity_id: assignedEthId,
+          avatar_url: '',
+          current_job: r.specialization || 'Lao động tự do',
+          central_member_code: '',
+          note: r.note || undefined,
+        };
+      });
+
+      const count = await bulkImportMembers(newMembersToImport as any);
+      showToast({
+        title: `Đã nhập thành công ${count} đoàn viên vào hệ thống`,
+        description: importResult.newUnitsToCreate.length > 0
+          ? `Đã đồng bộ vào ${importResult.newUnitsToCreate.length} chi đoàn mới.`
+          : undefined,
+        type: 'success',
+      });
+      setIsImportModalOpen(false);
+      setImportStep(1);
+      setImportResult(null);
+      setSelectedRowNums(new Set());
+      setImportFileName('');
+    } catch (err) {
+      showToast({
+        title: 'Có lỗi khi nhập dữ liệu',
+        description: err instanceof Error ? err.message : 'Lỗi không xác định',
+        type: 'error',
+      });
+    } finally {
+      setImporting(false);
+    }
   };
 
   // Selected Member Details
@@ -390,7 +555,7 @@ export const MembersPage: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-2">
-          <button
+          <button title="Xuất Excel ()"
             type="button"
             onClick={handleExportExcel}
             className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 rounded-lg shadow-2xs transition-all cursor-pointer"
@@ -398,7 +563,7 @@ export const MembersPage: React.FC = () => {
             <Download className="w-4 h-4 text-slate-500" /> Xuất Excel ({filteredMembers.length})
           </button>
 
-          <button
+          <button title="Nhập từ Excel"
             type="button"
             onClick={() => {
               setImportStep(1);
@@ -409,7 +574,7 @@ export const MembersPage: React.FC = () => {
             <Upload className="w-4 h-4" /> Nhập từ Excel
           </button>
 
-          <button
+          <button title="Thêm đoàn viên"
             type="button"
             onClick={handleOpenAddModal}
             className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-[#1F5FBF] hover:bg-[#154690] rounded-lg shadow-xs transition-all cursor-pointer"
@@ -418,6 +583,72 @@ export const MembersPage: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {/* BANNER: ĐOÀN VIÊN MỚI TỰ ĐĂNG KÝ GOOGLE CHỜ BÍ THƯ DUYỆT */}
+      {pendingMembers.length > 0 && (
+        <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 space-y-3 shadow-2xs">
+          <div className="flex items-center justify-between">
+            <h3 className="text-xs md:text-sm font-bold text-amber-900 flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 text-amber-600" />
+              Đoàn viên mới đăng ký tài khoản cần xác nhận ({pendingMembers.length})
+            </h3>
+            <span className="text-[11px] text-amber-700 font-semibold">
+              Bí thư chi đoàn kiểm tra xem đúng đoàn viên của chi đoàn mình không
+            </span>
+          </div>
+
+          <div className="divide-y divide-amber-200/60 bg-white rounded-xl border border-amber-200/80 overflow-hidden text-xs">
+            {pendingMembers.map(pm => (
+              <div key={pm.id} className="p-3 flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  {pm.avatar_url && (
+                    <Avatar src={pm.avatar_url} name={pm.full_name} seed={pm.id} size={32} />
+                  )}
+                  <div>
+                    <span className="font-bold text-slate-900">{pm.full_name}</span>
+                    <span className="text-slate-500 ml-2">
+                      Ngày sinh: {formatDateVN(pm.birth_date)} · Chi đoàn: <strong>{getUnitById(pm.unit_id)?.name}</strong> · SĐT: {pm.phone || '—'}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button title="Xác nhận đoàn viên mình"
+                    type="button"
+                    disabled={isReviewingReg}
+                    onClick={async () => {
+                      setIsReviewingReg(true);
+                      try {
+                        const res = await reviewMemberRegistration({ memberId: pm.id, action: 'approve' });
+                        if (res.success) {
+                          showToast({ title: 'Đã xác nhận đoàn viên vào chi đoàn chính thức', type: 'success' });
+                        }
+                      } finally {
+                        setIsReviewingReg(false);
+                      }
+                    }}
+                    className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg shadow-2xs"
+                  >
+                    <Check className="w-3.5 h-3.5" /> Xác nhận đoàn viên mình
+                  </button>
+
+                  <button title="Từ chối / Xóa"
+                    type="button"
+                    disabled={isReviewingReg}
+                    onClick={() => {
+                      setRejectingMember(pm);
+                      setRejectReason('');
+                    }}
+                    className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 rounded-lg"
+                  >
+                    <X className="w-3.5 h-3.5" /> Từ chối / Xóa
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Filter Box */}
       <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs space-y-3">
@@ -542,7 +773,9 @@ export const MembersPage: React.FC = () => {
                   </td>
                 </tr>
               ) : (
-                filteredMembers.slice(0, 30).map(member => {
+                filteredMembers
+                  .slice((currentPage - 1) * pageSize, currentPage * pageSize)
+                  .map(member => {
                   const unit = getUnitById(member.unit_id);
                   const age = calculateAge(member.birth_date);
                   const isMatured = isMemberMatured(member.birth_date, yearlySettings.matured_age);
@@ -555,9 +788,19 @@ export const MembersPage: React.FC = () => {
                     >
                       <td className="p-3.5 font-bold text-slate-900 whitespace-nowrap">
                         <div className="flex items-center gap-2.5">
-                          <img src={member.avatar_url} alt="" className="w-7 h-7 rounded-full object-cover shrink-0" />
+                          <Avatar src={member.avatar_url} name={member.full_name} seed={member.id} size={28} />
                           <div>
                             <span className="hover:text-[#1F5FBF] transition-colors">{member.full_name}</span>
+                            {member.is_elite_member && (
+                              <span className="ml-1.5 inline-flex items-center px-1.5 py-0.2 rounded text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300" title="Đoàn viên ưu tú">
+                                ★ Ưu tú
+                              </span>
+                            )}
+                            {member.is_newly_admitted && (
+                              <span className="ml-1.5 inline-flex items-center px-1.5 py-0.2 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300" title="Đoàn viên mới kết nạp trong năm">
+                                Mới kết nạp
+                              </span>
+                            )}
                             <span className="text-[10px] text-slate-400 block font-mono">
                               {member.central_member_code}
                             </span>
@@ -645,7 +888,82 @@ export const MembersPage: React.FC = () => {
                           </button>
                           <button
                             type="button"
-                            onClick={() => deleteMember(member.id)}
+                            onClick={async () => {
+                              const willDeactivate = member.is_active;
+                              const ok = await confirm({
+                                title: willDeactivate
+                                  ? `Ngừng hoạt động "${member.full_name}"?`
+                                  : `Kích hoạt lại "${member.full_name}"?`,
+                                message: willDeactivate
+                                  ? 'Hồ sơ và toàn bộ lịch sử (điểm thi đua, minh chứng, đoàn phí) vẫn được giữ nguyên.'
+                                  : 'Đoàn viên sẽ xuất hiện lại trong danh sách đang hoạt động.',
+                                details: willDeactivate
+                                  ? 'Đoàn viên sẽ bị ẩn khỏi danh sách mặc định nhưng vẫn tính vào báo cáo năm.'
+                                  : undefined,
+                                variant: willDeactivate ? 'warning' : 'success',
+                                confirmText: willDeactivate ? 'Ngừng hoạt động' : 'Kích hoạt lại',
+                              });
+                              if (!ok) return;
+                              try {
+                                const res = await setMemberActive(member.id, !willDeactivate);
+                                if (res.success) {
+                                  showToast({
+                                    title: willDeactivate
+                                      ? `Đã ngừng hoạt động ${member.full_name}`
+                                      : `Đã kích hoạt lại ${member.full_name}`,
+                                    type: 'success',
+                                  });
+                                } else {
+                                  showToast({ title: 'Không đổi được trạng thái', description: res.message, type: 'error' });
+                                }
+                              } catch (err) {
+                                showToast({
+                                  title: 'Không đổi được trạng thái',
+                                  description: err instanceof Error ? err.message : 'Lỗi không xác định',
+                                  type: 'error',
+                                });
+                              }
+                            }}
+                            className={`p-1.5 rounded-lg cursor-pointer ${
+                              member.is_active
+                                ? 'text-slate-500 hover:text-amber-600 hover:bg-amber-50'
+                                : 'text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50'
+                            }`}
+                            title={member.is_active ? 'Ngừng hoạt động (giữ lịch sử)' : 'Kích hoạt lại'}
+                          >
+                            {member.is_active ? <PowerOff className="w-3.5 h-3.5" /> : <Power className="w-3.5 h-3.5" />}
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              const ok = await confirm({
+                                title: `Xóa hẳn "${member.full_name}"?`,
+                                message: 'Thao tác này KHÔNG THỂ HOÀN TÁC.',
+                                details: 'Khuyến nghị: nếu đoàn viên đã có dữ liệu (nhiệm vụ, bài nộp, đoàn phí), hãy dùng "Ngừng hoạt động" để giữ lại lịch sử thay vì xóa.',
+                                variant: 'danger',
+                                confirmText: 'Xóa vĩnh viễn',
+                              });
+                              if (!ok) return;
+                              try {
+                                const res = await deleteMember(member.id);
+                                if (res.success) {
+                                  showToast({ title: `Đã xóa đoàn viên ${member.full_name}`, type: 'success' });
+                                } else {
+                                  showToast({
+                                    title: 'Không thể xóa đoàn viên',
+                                    description: res.message || 'Không rõ nguyên nhân.',
+                                    type: 'error',
+                                  });
+                                }
+                              } catch (err) {
+                                showToast({
+                                  title: 'Không thể xóa đoàn viên',
+                                  description: err instanceof Error ? err.message : 'Lỗi không xác định',
+                                  type: 'error',
+                                });
+                              }
+                            }}
                             className="p-1.5 text-slate-500 hover:text-rose-600 hover:bg-rose-50 rounded-lg cursor-pointer"
                             title="Xóa đoàn viên"
                           >
@@ -660,6 +978,74 @@ export const MembersPage: React.FC = () => {
             </tbody>
           </table>
         </div>
+
+        {/* Thanh Phân Trang Danh Sách Đoàn Viên */}
+        {filteredMembers.length > 0 && (
+          <div className="p-3 bg-slate-50 border-t border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
+            <div className="flex items-center gap-2 text-slate-600">
+              <span>Hiển thị</span>
+              <select
+                value={pageSize}
+                onChange={e => {
+                  setPageSize(Number(e.target.value));
+                  setCurrentPage(1);
+                }}
+                className="p-1 bg-white border border-slate-300 rounded font-semibold text-slate-800"
+              >
+                <option value={20}>20</option>
+                <option value={25}>25</option>
+                <option value={50}>50</option>
+                <option value={100}>100</option>
+              </select>
+              <span>
+                đoàn viên / trang (<b>{Math.min((currentPage - 1) * pageSize + 1, filteredMembers.length)}</b> -{' '}
+                <b>{Math.min(currentPage * pageSize, filteredMembers.length)}</b> trong tổng <b>{filteredMembers.length}</b>)
+              </span>
+            </div>
+
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                disabled={currentPage <= 1}
+                onClick={() => setCurrentPage(1)}
+                className="px-2 py-1 bg-white border border-slate-300 rounded font-medium text-slate-600 disabled:opacity-40 hover:bg-slate-50"
+                title="Trang đầu"
+              >
+                &laquo;
+              </button>
+              <button title="&lsaquo; Trước"
+                type="button"
+                disabled={currentPage <= 1}
+                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                className="px-2.5 py-1 bg-white border border-slate-300 rounded font-medium text-slate-600 disabled:opacity-40 hover:bg-slate-50"
+              >
+                &lsaquo; Trước
+              </button>
+
+              <span className="px-2 font-bold text-[#1F5FBF]">
+                Trang {currentPage} / {Math.max(1, Math.ceil(filteredMembers.length / pageSize))}
+              </span>
+
+              <button title="Sau &rsaquo;"
+                type="button"
+                disabled={currentPage >= Math.ceil(filteredMembers.length / pageSize)}
+                onClick={() => setCurrentPage(p => Math.min(Math.ceil(filteredMembers.length / pageSize), p + 1))}
+                className="px-2.5 py-1 bg-white border border-slate-300 rounded font-medium text-slate-600 disabled:opacity-40 hover:bg-slate-50"
+              >
+                Sau &rsaquo;
+              </button>
+              <button
+                type="button"
+                disabled={currentPage >= Math.ceil(filteredMembers.length / pageSize)}
+                onClick={() => setCurrentPage(Math.ceil(filteredMembers.length / pageSize))}
+                className="px-2 py-1 bg-white border border-slate-300 rounded font-medium text-slate-600 disabled:opacity-40 hover:bg-slate-50"
+                title="Trang cuối"
+              >
+                &raquo;
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* HỒ SƠ ĐOÀN VIÊN CHI TIẾT (DRAWER TRƯỢT TỪ PHẢI) */}
@@ -669,10 +1055,12 @@ export const MembersPage: React.FC = () => {
             {/* Header */}
             <div className="p-5 bg-slate-50 border-b border-slate-200 flex items-start justify-between gap-3 shrink-0">
               <div className="flex items-center gap-3">
-                <img
+                <Avatar
                   src={selectedMember.avatar_url}
-                  alt=""
-                  className="w-12 h-12 rounded-full object-cover border-2 border-blue-400 shadow-xs"
+                  name={selectedMember.full_name}
+                  seed={selectedMember.id}
+                  size={48}
+                  className="ring-2 ring-blue-400 shadow-xs"
                 />
                 <div>
                   <h2 className="text-base font-bold text-slate-900">{selectedMember.full_name}</h2>
@@ -687,7 +1075,7 @@ export const MembersPage: React.FC = () => {
                 </div>
               </div>
 
-              <button
+              <button title="Đóng"
                 type="button"
                 onClick={() => setSelectedMember(null)}
                 className="p-1 rounded-full text-slate-400 hover:text-slate-600 hover:bg-slate-200 cursor-pointer"
@@ -750,6 +1138,16 @@ export const MembersPage: React.FC = () => {
                     <span className="font-bold">{selectedMember.is_party_member ? 'Đảng viên chính thức' : 'Chưa vào Đảng'}</span>
                   </div>
                   <div>
+                    <span className="text-slate-400 block">Đoàn viên ưu tú:</span>
+                    <span className="font-bold text-amber-700">
+                      {selectedMember.is_elite_member ? (
+                        <>★ Đã công nhận {selectedMember.elite_date ? `(${formatDateVN(selectedMember.elite_date)})` : ''}</>
+                      ) : (
+                        'Chưa'
+                      )}
+                    </span>
+                  </div>
+                  <div>
                     <span className="text-slate-400 block">Tình trạng tuổi đoàn:</span>
                     <span className="font-semibold">
                       {isMemberMatured(selectedMember.birth_date, yearlySettings.matured_age)
@@ -761,7 +1159,78 @@ export const MembersPage: React.FC = () => {
                     <span className="text-slate-400 block">Quy hoạch chức danh:</span>
                     <span className="font-semibold">{selectedMember.planned_position || 'Chưa quy hoạch'}</span>
                   </div>
+                  <div className="col-span-2 pt-2 border-t border-blue-100 flex items-center justify-between">
+                    <div>
+                      <span className="font-bold text-slate-800 block text-xs">Đoàn viên mới kết nạp trong năm:</span>
+                      <span className="text-[11px] text-slate-500">Tính vào chỉ tiêu phát triển đoàn viên mới của Chi đoàn</span>
+                    </div>
+                    <button
+                      type="button"
+                      title="Đánh dấu / bỏ đánh dấu đoàn viên mới kết nạp trong năm (tính vào chỉ tiêu phát triển Đảng/Đoàn)"
+                      onClick={async () => {
+                        const newVal = !selectedMember.is_newly_admitted;
+                        const res = await toggleMemberNewlyAdmitted(selectedMember.id, newVal);
+                        if (res.success) {
+                          setSelectedMember(prev => prev ? { ...prev, is_newly_admitted: newVal } : null);
+                          showToast({
+                            title: newVal ? 'Đã đánh dấu đoàn viên mới kết nạp' : 'Đã bỏ đánh dấu mới kết nạp',
+                            type: 'success',
+                          });
+                        }
+                      }}
+                      className={`px-3 py-1 rounded-lg text-xs font-bold transition-all ${
+                        selectedMember.is_newly_admitted
+                          ? 'bg-emerald-600 text-white shadow-2xs'
+                          : 'bg-white border border-slate-300 text-slate-700 hover:bg-slate-50'
+                      }`}
+                    >
+                      {selectedMember.is_newly_admitted ? '✓ Đang tính mới kết nạp' : '+ Đánh dấu mới kết nạp'}
+                    </button>
+                  </div>
                 </div>
+
+                {/* Bổ nhiệm vào Ban Chấp hành */}
+                {(() => {
+                  const currentCommittee = unitCommittees.find(
+                    c => String(c.member_id) === String(selectedMember.id) && !c.term_end
+                  );
+                  return (
+                    <div className="pt-2 border-t border-blue-100 flex items-center justify-between gap-2">
+                      <div>
+                        <span className="font-bold text-slate-800 block text-xs">Ban Chấp hành:</span>
+                        <span className="text-[11px] text-slate-500">
+                          {currentCommittee
+                            ? currentCommittee.position === 'secretary'
+                              ? 'Đang là Bí thư'
+                              : currentCommittee.position === 'deputy_secretary'
+                              ? 'Đang là Phó Bí thư'
+                              : currentCommittee.is_standing
+                              ? 'Đang là Ủy viên Thường vụ'
+                              : 'Đang là Ủy viên BCH'
+                            : 'Chưa tham gia Ban Chấp hành'}
+                        </span>
+                      </div>
+                      <button title="Bổ nhiệm vào BCH"
+                        type="button"
+                        onClick={() => {
+                          setAppointMember(selectedMember);
+                          setAppointPosition(
+                            currentCommittee?.position === 'secretary' ? 'secretary'
+                            : currentCommittee?.position === 'deputy_secretary' ? 'deputy_secretary'
+                            : 'committee_member'
+                          );
+                          setAppointIsStanding(currentCommittee?.is_standing ?? false);
+                          setAppointTermStart(new Date().toISOString().slice(0, 10));
+                          setAppointScope('unit');
+                          setAppointError('');
+                        }}
+                        className="px-3 py-1 rounded-lg text-xs font-bold bg-blue-50 text-[#1F5FBF] border border-blue-200 hover:bg-blue-100"
+                      >
+                        Bổ nhiệm vào BCH
+                      </button>
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* Nhóm 3: Học vấn - Chuyên môn */}
@@ -876,7 +1345,7 @@ export const MembersPage: React.FC = () => {
               <h3 className="text-base font-bold text-slate-900">
                 {editingMemberId ? 'Chỉnh sửa Hồ sơ Đoàn viên' : 'Thêm mới Đoàn viên'}
               </h3>
-              <button
+              <button title="Đóng"
                 type="button"
                 onClick={() => setIsMemberModalOpen(false)}
                 className="text-slate-400 hover:text-slate-600"
@@ -976,6 +1445,27 @@ export const MembersPage: React.FC = () => {
                     <option value="secretary">Bí thư Chi đoàn</option>
                   </select>
                 </div>
+
+                {editingMemberId && (
+                  <div>
+                    <label className="font-bold text-slate-800 block mb-1">Trạng thái sinh hoạt:</label>
+                    <select
+                      value={formIsActive ? 'active' : 'inactive'}
+                      onChange={e => setFormIsActive(e.target.value === 'active')}
+                      className={`w-full p-2 bg-slate-50 border border-slate-300 rounded-lg font-medium ${
+                        formIsActive ? 'text-emerald-700' : 'text-slate-500'
+                      }`}
+                    >
+                      <option value="active">Đang hoạt động</option>
+                      <option value="inactive">Ngừng hoạt động / Chuyển sinh hoạt</option>
+                    </select>
+                    {!formIsActive && (
+                      <p className="text-[10px] text-amber-700 mt-1">
+                        Hồ sơ và lịch sử vẫn được giữ nguyên, chỉ ẩn khỏi danh sách mặc định.
+                      </p>
+                    )}
+                  </div>
+                )}
               </div>
 
               <div className="grid grid-cols-2 gap-3">
@@ -1000,12 +1490,61 @@ export const MembersPage: React.FC = () => {
                 </div>
               </div>
 
+              <div className="space-y-2 p-3 bg-amber-50/50 rounded-lg border border-amber-200">
+                <div className="flex items-center justify-between">
+                  <label className="flex items-center gap-2 cursor-pointer font-bold text-amber-900">
+                    <input
+                      type="checkbox"
+                      checked={formIsElite}
+                      onChange={e => {
+                        setFormIsElite(e.target.checked);
+                        if (e.target.checked && formPartyStatus === 'none') setFormPartyStatus('elite');
+                      }}
+                      className="rounded text-amber-600 focus:ring-amber-500"
+                    />
+                    <span>Công nhận là Đoàn viên ưu tú</span>
+                  </label>
+
+                  {formIsElite && (
+                    <input
+                      type="date"
+                      value={formEliteDate}
+                      onChange={e => setFormEliteDate(e.target.value)}
+                      className="p-1 text-xs bg-white border border-amber-300 rounded"
+                      title="Ngày công nhận đoàn viên ưu tú"
+                    />
+                  )}
+                </div>
+
+                {formIsElite && (
+                  <div>
+                    <label className="text-[11px] font-bold text-amber-900 block mb-1">Giai đoạn phát triển Đảng:</label>
+                    <select
+                      value={formPartyStatus}
+                      onChange={e => setFormPartyStatus(e.target.value as PartyTargetStatus)}
+                      className="w-full p-1.5 bg-white border border-amber-300 rounded text-xs text-amber-900"
+                    >
+                      <option value="elite">Đoàn viên ưu tú (Mới công nhận)</option>
+                      <option value="trained_class">Đã học lớp Bồi dưỡng nhận thức về Đảng (Cảm tình Đảng)</option>
+                      <option value="introduced">Đã giới thiệu sang Chi bộ Đảng xem xét kết nạp</option>
+                      <option value="admitted">Đã kết nạp Đảng</option>
+                    </select>
+                  </div>
+                )}
+              </div>
+
               <div className="flex items-center gap-2 p-3 bg-red-50/50 rounded-lg border border-red-100">
                 <input
                   type="checkbox"
                   id="chkParty"
                   checked={formIsParty}
-                  onChange={e => setFormIsParty(e.target.checked)}
+                  onChange={e => {
+                    setFormIsParty(e.target.checked);
+                    if (e.target.checked) {
+                      setFormIsElite(true);
+                      setFormPartyStatus('admitted');
+                    }
+                  }}
                   className="rounded text-red-600 focus:ring-red-500"
                 />
                 <label htmlFor="chkParty" className="font-bold text-red-800 cursor-pointer">
@@ -1014,7 +1553,7 @@ export const MembersPage: React.FC = () => {
               </div>
 
               <div className="p-3 bg-slate-50 border-t border-slate-200 flex justify-end gap-2 pt-3">
-                <button
+                <button title="Hủy"
                   type="button"
                   onClick={() => setIsMemberModalOpen(false)}
                   className="px-4 py-2 font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg"
@@ -1023,6 +1562,7 @@ export const MembersPage: React.FC = () => {
                 </button>
                 <button
                   type="submit"
+                  title="Lưu thông tin hồ sơ đoàn viên"
                   className="px-5 py-2 font-bold text-white bg-[#1F5FBF] hover:bg-[#154690] rounded-lg shadow-xs"
                 >
                   {editingMemberId ? 'Cập nhật' : 'Thêm mới'}
@@ -1042,7 +1582,7 @@ export const MembersPage: React.FC = () => {
                 <h3 className="text-base font-bold text-slate-900">Nhập danh sách Đoàn viên từ Excel</h3>
                 <p className="text-xs text-slate-500">Bước {importStep}/4</p>
               </div>
-              <button
+              <button title="Đóng"
                 type="button"
                 onClick={() => setIsImportModalOpen(false)}
                 className="text-slate-400 hover:text-slate-600"
@@ -1073,29 +1613,39 @@ export const MembersPage: React.FC = () => {
                   <FileSpreadsheet className="w-12 h-12 text-emerald-600 mx-auto" />
                   <div>
                     <h4 className="text-sm font-bold text-slate-900">Chọn file Excel danh sách đoàn viên</h4>
-                    <p className="text-slate-500 max-w-sm mx-auto mt-1">
-                      File có các cột: Họ tên, Ngày sinh, Giới tính, SĐT, Ngày vào Đoàn, Chi đoàn.
-                      Cột có thể theo tên tiêu đề (không phân biệt dấu) hoặc theo đúng thứ tự này.
+                    <p className="text-slate-500 max-w-md mx-auto mt-1">
+                      Hệ thống tự động nhận diện file mẫu chuẩn hoặc file hành chính thực tế (hỗ trợ cả header gộp, cột năm sinh, tự nhận diện chi đoàn mới và chức vụ BTCĐ/phó BTCĐ).
                     </p>
                   </div>
-                  <input
-                    ref={importFileRef}
-                    type="file"
-                    accept=".xlsx"
-                    className="hidden"
-                    onChange={e => {
-                      const f = e.target.files?.[0];
-                      if (f) handleImportFile(f);
-                      e.target.value = '';
-                    }}
-                  />
-                  <button
-                    type="button"
-                    onClick={() => importFileRef.current?.click()}
-                    className="inline-flex items-center gap-1.5 px-4 py-2 font-bold text-white bg-[#1F5FBF] hover:bg-[#154690] rounded-lg cursor-pointer"
-                  >
-                    <Upload className="w-4 h-4" /> Chọn file Excel (.xlsx)
-                  </button>
+
+                  <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-2">
+                    <button title="Tải file Excel mẫu chuẩn (.xlsx)"
+                      type="button"
+                      onClick={() => downloadMemberTemplate(units)}
+                      className="inline-flex items-center gap-1.5 px-4 py-2 font-semibold text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 rounded-lg shadow-2xs"
+                    >
+                      <Download className="w-4 h-4 text-[#1F5FBF]" /> Tải file Excel mẫu chuẩn (.xlsx)
+                    </button>
+
+                    <input
+                      ref={importFileRef}
+                      type="file"
+                      accept=".xlsx"
+                      className="hidden"
+                      onChange={e => {
+                        const f = e.target.files?.[0];
+                        if (f) handleImportFile(f);
+                        e.target.value = '';
+                      }}
+                    />
+                    <button title="Chọn file Excel tải lên"
+                      type="button"
+                      onClick={() => importFileRef.current?.click()}
+                      className="inline-flex items-center gap-1.5 px-4 py-2 font-bold text-white bg-[#1F5FBF] hover:bg-[#154690] rounded-lg cursor-pointer shadow-xs"
+                    >
+                      <Upload className="w-4 h-4" /> Chọn file Excel tải lên
+                    </button>
+                  </div>
                 </div>
               )}
 
@@ -1109,73 +1659,186 @@ export const MembersPage: React.FC = () => {
                 </div>
               )}
 
-              {importStep === 3 && (
+              {importStep === 3 && importResult && (
                 <div className="space-y-3">
-                  <div className="flex items-center justify-between pb-2 border-b border-slate-100">
-                    <span className="font-bold text-slate-900">
-                      Xem trước kết quả đối soát: <span className="text-emerald-600 font-bold">2 hợp lệ</span>,{' '}
-                      <span className="text-amber-600 font-bold">1 trùng</span>,{' '}
-                      <span className="text-rose-600 font-bold">2 lỗi</span>
+                  <div className="flex flex-wrap items-center justify-between pb-2 border-b border-slate-100 gap-2">
+                    <span className="font-bold text-slate-900 text-xs">
+                      Kết quả đối soát ({importResult.totalRows} dòng):{' '}
+                      <span className="text-emerald-700 font-bold">{importResult.validCount} hợp lệ</span>,{' '}
+                      <span className="text-amber-700 font-bold">{importResult.duplicateCount} trùng</span>,{' '}
+                      <span className="text-rose-700 font-bold">{importResult.invalidCount} lỗi</span>
                     </span>
                   </div>
 
-                  <div className="space-y-2">
-                    {parsedRows.map(row => (
-                      <div
-                        key={row.rowNum}
-                        className={`p-2.5 rounded-lg border flex items-center justify-between ${
-                          !row.isValid
-                            ? 'bg-rose-50 border-rose-200 text-rose-900'
-                            : row.isDuplicate
-                            ? 'bg-amber-50 border-amber-200 text-amber-900'
-                            : 'bg-emerald-50/60 border-emerald-200 text-emerald-900'
-                        }`}
-                      >
-                        <div>
-                          <span className="font-bold">
-                            Dòng {row.rowNum}: {row.full_name}
-                          </span>
-                          <span className="text-[11px] block text-slate-500">
-                            {row.birth_date} • {row.phone} • {row.unit_name}
-                          </span>
-                          {row.error && <span className="font-bold text-[10px] block mt-0.5">{row.error}</span>}
-                        </div>
+                  {importResult.newUnitsToCreate.length > 0 && (
+                    <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg text-xs text-blue-900 space-y-1">
+                      <p className="font-bold flex items-center gap-1.5">
+                        <Building2 className="w-4 h-4 text-[#1F5FBF]" />
+                        Phát hiện {importResult.newUnitsToCreate.length} Chi đoàn mới (chưa có trong hệ thống):
+                      </p>
+                      <p className="text-[11px] text-blue-800">
+                        {importResult.newUnitsToCreate.join(', ')}
+                      </p>
+                      <p className="text-[10px] text-blue-600 font-semibold italic">
+                        → Hệ thống sẽ TỰ ĐỘNG TẠO MỚI các chi đoàn này khi bạn bấm xác nhận ở bước tiếp theo!
+                      </p>
+                    </div>
+                  )}
 
-                        <div>
-                          {!row.isValid ? (
-                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-200 text-rose-800">
-                              Lỗi cú pháp
-                            </span>
-                          ) : row.isDuplicate ? (
-                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-200 text-amber-800">
-                              Trùng SĐT
-                            </span>
-                          ) : (
-                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-200 text-emerald-800">
-                              Hợp lệ
-                            </span>
-                          )}
-                        </div>
+                  {/* Thanh thao tác nhanh Checkbox & Thống kê chọn */}
+                  <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-lg flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <div className="flex items-center gap-3">
+                      <label className="flex items-center gap-2 cursor-pointer font-bold text-slate-800 select-none">
+                        <input
+                          type="checkbox"
+                          checked={importResult.validCount > 0 && selectedRowNums.size === importResult.validCount}
+                          onChange={e => {
+                            if (e.target.checked) {
+                              const validNums = new Set(importResult.rows.filter(r => r.isValid && !r.isDuplicate).map(r => r.rowNum));
+                              setSelectedRowNums(validNums);
+                            } else {
+                              setSelectedRowNums(new Set());
+                            }
+                          }}
+                          className="w-4 h-4 rounded text-[#1F5FBF] focus:ring-[#1F5FBF]"
+                        />
+                        <span>Chọn tất cả hợp lệ ({selectedRowNums.size}/{importResult.validCount})</span>
+                      </label>
+
+                      <button title="Bỏ chọn"
+                        type="button"
+                        onClick={() => setSelectedRowNums(new Set())}
+                        className="text-slate-500 hover:text-slate-700 underline text-[11px]"
+                      >
+                        Bỏ chọn
+                      </button>
+                    </div>
+
+                    {/* Phân trang */}
+                    {Math.ceil(parsedRows.length / PREVIEW_PAGE_SIZE) > 1 && (
+                      <div className="flex items-center gap-1.5 ml-auto">
+                        <button title="&lt; Trước"
+                          type="button"
+                          disabled={previewPage <= 1}
+                          onClick={() => setPreviewPage(p => Math.max(1, p - 1))}
+                          className="px-2 py-1 bg-white border border-slate-300 rounded text-slate-600 disabled:opacity-40"
+                        >
+                          &lt; Trước
+                        </button>
+                        <span className="font-semibold text-slate-700 px-1 text-[11px]">
+                          {previewPage} / {Math.ceil(parsedRows.length / PREVIEW_PAGE_SIZE)}
+                        </span>
+                        <button title="Sau &gt;"
+                          type="button"
+                          disabled={previewPage >= Math.ceil(parsedRows.length / PREVIEW_PAGE_SIZE)}
+                          onClick={() => setPreviewPage(p => Math.min(Math.ceil(parsedRows.length / PREVIEW_PAGE_SIZE), p + 1))}
+                          className="px-2 py-1 bg-white border border-slate-300 rounded text-slate-600 disabled:opacity-40"
+                        >
+                          Sau &gt;
+                        </button>
                       </div>
-                    ))}
+                    )}
+                  </div>
+
+                  {/* Danh sách dòng (được phân trang) */}
+                  <div className="space-y-1.5">
+                    {parsedRows
+                      .slice((previewPage - 1) * PREVIEW_PAGE_SIZE, previewPage * PREVIEW_PAGE_SIZE)
+                      .map(row => {
+                        const isChecked = selectedRowNums.has(row.rowNum);
+                        return (
+                          <div
+                            key={row.rowNum}
+                            onClick={() => {
+                              if (!row.isValid) return;
+                              setSelectedRowNums(prev => {
+                                const next = new Set(prev);
+                                if (next.has(row.rowNum)) next.delete(row.rowNum);
+                                else next.add(row.rowNum);
+                                return next;
+                              });
+                            }}
+                            className={`p-2.5 rounded-lg border flex items-center justify-between gap-3 cursor-pointer transition-colors ${
+                              !row.isValid
+                                ? 'bg-rose-50/70 border-rose-200 text-rose-900 cursor-not-allowed opacity-80'
+                                : isChecked
+                                ? 'bg-blue-50/60 border-blue-300 text-slate-900'
+                                : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                            }`}
+                          >
+                            <div className="flex items-center gap-2.5 min-w-0">
+                              <input
+                                type="checkbox"
+                                disabled={!row.isValid}
+                                checked={isChecked}
+                                onChange={e => {
+                                  e.stopPropagation();
+                                  if (!row.isValid) return;
+                                  setSelectedRowNums(prev => {
+                                    const next = new Set(prev);
+                                    if (next.has(row.rowNum)) next.delete(row.rowNum);
+                                    else next.add(row.rowNum);
+                                    return next;
+                                  });
+                                }}
+                                className="w-4 h-4 rounded text-[#1F5FBF] focus:ring-[#1F5FBF] shrink-0"
+                              />
+                              <div className="min-w-0">
+                                <p className="font-bold text-slate-900 truncate">
+                                  Dòng {row.rowNum}: {row.full_name}{' '}
+                                  <span className="font-normal text-slate-500 text-[11px]">({row.unit_name})</span>
+                                </p>
+                                <p className="text-[11px] text-slate-500 truncate">
+                                  {row.birth_date} • {row.current_position === 'secretary' ? 'Bí thư' : row.current_position === 'deputy_secretary' ? 'Phó Bí thư' : 'Đoàn viên'}
+                                  {row.specialization ? ` • ${row.specialization}` : ''}
+                                  {row.is_party_member ? ' • Đảng viên' : ''}
+                                </p>
+                                {row.error && <p className="font-bold text-[10px] text-rose-600 mt-0.5">{row.error}</p>}
+                              </div>
+                            </div>
+
+                            <div className="shrink-0">
+                              {!row.isValid ? (
+                                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-200 text-rose-800">
+                                  Lỗi
+                                </span>
+                              ) : row.isDuplicate ? (
+                                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-200 text-amber-800">
+                                  Đã có
+                                </span>
+                              ) : (
+                                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-200 text-emerald-800">
+                                  Hợp lệ
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
                   </div>
                 </div>
               )}
 
-              {importStep === 4 && (
+              {importStep === 4 && importResult && (
                 <div className="text-center space-y-4 py-4">
                   <CheckCircle2 className="w-12 h-12 text-emerald-600 mx-auto" />
                   <h4 className="text-sm font-bold text-slate-900">Sẵn sàng nhập dữ liệu</h4>
-                  <p className="text-slate-600 max-w-sm mx-auto">
-                    Hệ thống sẽ nhập <b>2 đoàn viên hợp lệ</b> vào danh sách và bỏ qua các dòng lỗi / dòng trùng.
+                  <p className="text-slate-600 max-w-md mx-auto">
+                    Hệ thống sẽ nhập <b>{selectedRowNums.size} đoàn viên đã chọn</b> vào danh sách và tự động gán vào đúng chi đoàn tương ứng.
                   </p>
+                  {importResult.newUnitsToCreate.length > 0 && (
+                    <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg text-xs text-blue-800 max-w-md mx-auto text-left">
+                      <span className="font-bold block">Tự động khởi tạo {importResult.newUnitsToCreate.length} Chi đoàn:</span>
+                      <span className="text-[11px] block mt-0.5">{importResult.newUnitsToCreate.join(', ')}</span>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
 
             <div className="p-4 bg-slate-50 border-t border-slate-200 flex justify-between">
               {importStep > 1 && (
-                <button
+                <button title="Quay lại"
                   type="button"
                   onClick={() => setImportStep((importStep - 1) as any)}
                   className="px-3 py-1.5 font-semibold text-slate-600 bg-white border border-slate-200 rounded-lg"
@@ -1185,7 +1848,7 @@ export const MembersPage: React.FC = () => {
               )}
               <div className="ml-auto">
                 {importStep < 4 ? (
-                  <button
+                  <button title="Tiếp theo"
                     type="button"
                     onClick={() => setImportStep((importStep + 1) as any)}
                     className="px-4 py-2 font-bold text-white bg-[#1F5FBF] hover:bg-[#154690] rounded-lg"
@@ -1193,15 +1856,226 @@ export const MembersPage: React.FC = () => {
                     Tiếp theo
                   </button>
                 ) : (
-                  <button
+                  <button title="Đang xử lý"
                     type="button"
                     onClick={handleConfirmImport}
-                    className="px-4 py-2 font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg"
+                    disabled={importing || selectedRowNums.size === 0}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg disabled:opacity-60 disabled:cursor-not-allowed"
                   >
-                    Xác nhận nhập vào hệ thống
+                    {importing && <Loader2 className="w-4 h-4 animate-spin" />}
+                    {importing ? 'Đang nhập dữ liệu…' : 'Xác nhận nhập vào hệ thống'}
                   </button>
                 )}
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: TỪ CHỐI ĐOÀN VIÊN ĐĂNG KÝ (BẮT BUỘC NÊU LÝ DO) */}
+      {rejectingMember && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-5 space-y-3 shadow-2xl">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-bold text-rose-700 flex items-center gap-1.5">
+                <AlertCircle className="w-4 h-4" /> Từ chối hồ sơ đăng ký
+              </h3>
+              <button title="Đóng" type="button" onClick={() => setRejectingMember(null)} className="text-slate-400 hover:text-slate-700">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-600">
+              Đoàn viên: <strong>{rejectingMember.full_name}</strong> (Chi đoàn {getUnitById(rejectingMember.unit_id)?.name})
+            </p>
+
+            <div>
+              <label className="text-[11px] font-bold text-slate-700 block mb-1">
+                Lý do từ chối (Bắt buộc để ghi nhật ký hệ thống): <span className="text-rose-500">*</span>
+              </label>
+              <textarea
+                rows={3}
+                required
+                value={rejectReason}
+                onChange={e => setRejectReason(e.target.value)}
+                placeholder="Ví dụ: Không phải đoàn viên đang sinh hoạt tại ấp 1 / Sai thông tin chi đoàn…"
+                className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-lg text-xs focus:outline-none focus:border-rose-500 resize-none"
+              />
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <button title="Hủy"
+                type="button"
+                onClick={() => setRejectingMember(null)}
+                className="px-4 py-2 text-xs font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg"
+              >
+                Hủy
+              </button>
+              <button title="Xác nhận từ chối & Xóa"
+                type="button"
+                disabled={!rejectReason.trim() || isReviewingReg}
+                onClick={async () => {
+                  setIsReviewingReg(true);
+                  try {
+                    const res = await reviewMemberRegistration({
+                      memberId: rejectingMember.id,
+                      action: 'reject',
+                      rejectionReason: rejectReason.trim(),
+                    });
+                    if (res.success) {
+                      showToast({ title: 'Đã từ chối và ghi nhật ký lý do', type: 'info' });
+                      setRejectingMember(null);
+                    } else {
+                      showToast({ title: 'Có lỗi xảy ra', description: res.message, type: 'error' });
+                    }
+                  } finally {
+                    setIsReviewingReg(false);
+                  }
+                }}
+                className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 rounded-lg disabled:opacity-60"
+              >
+                {isReviewingReg && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                Xác nhận từ chối & Xóa
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: BỔ NHIỆM VÀO BAN CHẤP HÀNH */}
+      {appointMember && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-5 space-y-4 shadow-2xl">
+            <div className="flex items-start justify-between">
+              <div>
+                <h3 className="text-sm font-bold text-slate-900">Bổ nhiệm vào Ban Chấp hành</h3>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  {appointMember.full_name} · {getUnitById(appointMember.unit_id)?.name}
+                </p>
+              </div>
+              <button title="Đóng" type="button" onClick={() => setAppointMember(null)} className="text-slate-400 hover:text-slate-700">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div>
+                <label className="font-bold text-slate-800 block mb-1">Bổ nhiệm vào cấp bộ Đoàn:</label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button title="Chi đoàn"
+                    type="button"
+                    onClick={() => setAppointScope('unit')}
+                    className={`p-2.5 rounded-lg border text-left transition-all ${
+                      appointScope === 'unit'
+                        ? 'bg-blue-50 border-[#1F5FBF] text-[#1F5FBF] font-bold'
+                        : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    <span className="text-[11px] block">Chi đoàn</span>
+                    <span className="text-[10px] font-normal text-slate-500 block truncate">
+                      {getUnitById(appointMember.unit_id)?.name || '—'}
+                    </span>
+                  </button>
+                  <button title="BCH Đoàn xã Cấp cơ sở"
+                    type="button"
+                    onClick={() => setAppointScope('commune')}
+                    className={`p-2.5 rounded-lg border text-left transition-all ${
+                      appointScope === 'commune'
+                        ? 'bg-blue-50 border-[#1F5FBF] text-[#1F5FBF] font-bold'
+                        : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-50'
+                    }`}
+                  >
+                    <span className="text-[11px] block">BCH Đoàn xã</span>
+                    <span className="text-[10px] font-normal text-slate-500 block">Cấp cơ sở</span>
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="font-bold text-slate-800 block mb-1">Chức vụ trong BCH:</label>
+                <select
+                  value={appointPosition}
+                  onChange={e => {
+                    const p = e.target.value as 'secretary' | 'deputy_secretary' | 'committee_member';
+                    setAppointPosition(p);
+                    if (p !== 'committee_member') setAppointIsStanding(true);
+                  }}
+                  className="w-full p-2.5 bg-white border border-slate-300 rounded-lg text-xs focus:outline-none focus:border-[#1F5FBF]"
+                >
+                  <option value="committee_member">Ủy viên Ban Chấp hành</option>
+                  <option value="deputy_secretary">Phó Bí thư</option>
+                  <option value="secretary">Bí thư</option>
+                </select>
+                <p className="text-[11px] text-slate-500 mt-1">
+                  Mỗi chi đoàn chỉ có <b>01 Bí thư</b> đang giữ chức. Nếu đã có Bí thư, hãy kết thúc nhiệm kỳ người đó trước.
+                </p>
+              </div>
+
+              <label className="flex items-center gap-2 p-2.5 bg-slate-50 border border-slate-200 rounded-lg cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={appointIsStanding}
+                  disabled={appointPosition !== 'committee_member'}
+                  onChange={e => setAppointIsStanding(e.target.checked)}
+                  className="w-4 h-4 rounded text-[#1F5FBF]"
+                />
+                <span className="font-semibold text-slate-800">Là thành viên <b>Ban Thường vụ</b></span>
+              </label>
+
+              <div>
+                <label className="font-bold text-slate-800 block mb-1">Ngày bắt đầu nhiệm kỳ:</label>
+                <input
+                  type="date"
+                  value={appointTermStart}
+                  onChange={e => setAppointTermStart(e.target.value)}
+                  className="w-full p-2.5 bg-white border border-slate-300 rounded-lg text-xs focus:outline-none focus:border-[#1F5FBF]"
+                />
+              </div>
+
+              {appointError && (
+                <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-lg text-[11px] text-rose-800">
+                  {appointError}
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
+              <button title="Hủy"
+                type="button"
+                onClick={() => setAppointMember(null)}
+                className="px-4 py-2 text-xs font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg"
+              >
+                Hủy
+              </button>
+              <button title="Xác nhận bổ nhiệm"
+                type="button"
+                disabled={isAppointing}
+                onClick={async () => {
+                  setIsAppointing(true);
+                  setAppointError('');
+                  try {
+                    const res = await addCommitteeMember(
+                      appointMember.id,
+                      appointScope === 'commune' ? null : appointMember.unit_id,
+                      appointPosition,
+                      appointIsStanding,
+                      appointTermStart
+                    );
+                    if (res.success) {
+                      showToast({ title: 'Đã bổ nhiệm vào Ban Chấp hành', type: 'success' });
+                      setAppointMember(null);
+                    } else {
+                      setAppointError(res.message || 'Không bổ nhiệm được');
+                    }
+                  } finally {
+                    setIsAppointing(false);
+                  }
+                }}
+                className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-[#1F5FBF] hover:bg-[#154690] rounded-lg disabled:opacity-60"
+              >
+                {isAppointing && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                Xác nhận bổ nhiệm
+              </button>
             </div>
           </div>
         </div>

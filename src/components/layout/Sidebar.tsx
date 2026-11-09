@@ -19,6 +19,10 @@ import {
   UserCircle,
   Camera,
   BookOpen,
+  BadgeCheck,
+  CreditCard,
+  Sparkles,
+  ClipboardList,
 } from 'lucide-react';
 
 export const Sidebar: React.FC = () => {
@@ -35,18 +39,18 @@ export const Sidebar: React.FC = () => {
 
     if (currentRole === 'staff') {
       // staff chỉ xem: Tổng quan, Nhiệm vụ, Tiêu chí, Chi đoàn, Đoàn viên, Ban chấp hành, Báo cáo
-      const staffAllowed = ['overview', 'tasks', 'criteria', 'units', 'members', 'committee', 'reports', 'journal'];
+      const staffAllowed = ['overview', 'tasks', 'criteria', 'units', 'members', 'committee', 'reports', 'journal', 'evaluation', 'union_fee', 'unit_report'];
       return staffAllowed.includes(menuKey);
     }
 
     if (currentRole === 'unit_secretary') {
       // Bí thư chi đoàn: Nộp minh chứng, Bảng tin, Nhiệm vụ (của chi đoàn mình), Chi đoàn của mình
-      const allowed = ['overview', 'submit', 'personal', 'feed', 'review', 'profile', 'journal', 'tasks', 'units'];
+      const allowed = ['overview', 'submit', 'personal', 'feed', 'review', 'profile', 'journal', 'tasks', 'units', 'evaluation', 'union_fee', 'unit_report'];
       return allowed.includes(menuKey);
     }
 
     if (currentRole === 'member') {
-      const allowed = ['overview', 'personal', 'feed', 'profile', 'journal'];
+      const allowed = ['overview', 'personal', 'feed', 'profile', 'journal', 'evaluation', 'union_fee', 'unit_report'];
       return allowed.includes(menuKey);
     }
 
@@ -137,6 +141,24 @@ export const Sidebar: React.FC = () => {
               </NavLink>
             )}
 
+            {canSee('evaluation') && (
+              <NavLink to="/danh-gia" className={navItemClass}>
+                <div className="flex items-center gap-2.5">
+                  <BadgeCheck className="w-4 h-4 shrink-0" />
+                  <span>Đánh giá</span>
+                </div>
+              </NavLink>
+            )}
+
+            {canSee('union_fee') && (
+              <NavLink to="/doan-phi" className={navItemClass}>
+                <div className="flex items-center gap-2.5">
+                  <CreditCard className="w-4 h-4 shrink-0" />
+                  <span>Đoàn phí</span>
+                </div>
+              </NavLink>
+            )}
+
             {canSee('reminders') && (
               <NavLink to="/nhac-nho" className={navItemClass}>
                 <div className="flex items-center gap-2.5">
@@ -192,6 +214,14 @@ export const Sidebar: React.FC = () => {
                 <span>Báo cáo</span>
               </div>
             </NavLink>
+            {canSee('unit_report') && (
+              <NavLink to="/bao-cao-chi-doan" className={navItemClass}>
+                <div className="flex items-center gap-2.5">
+                  <ClipboardList className="w-4 h-4 shrink-0" />
+                  <span>Báo cáo chi đoàn</span>
+                </div>
+              </NavLink>
+            )}
           </div>
         )}
 
@@ -199,6 +229,15 @@ export const Sidebar: React.FC = () => {
         {(canSee('settings') || canSee('accounts') || canSee('logs')) && (
           <div className="space-y-1">
             <p className="px-3 text-[11px] font-bold text-slate-400 uppercase tracking-wider">Hệ thống</p>
+
+            {canSee('settings') && (
+              <NavLink to="/thiet-lap" className={navItemClass}>
+                <div className="flex items-center gap-2.5">
+                  <Sparkles className="w-4 h-4 shrink-0 text-amber-500" />
+                  <span>Thiết lập ban đầu</span>
+                </div>
+              </NavLink>
+            )}
 
             {canSee('settings') && (
               <NavLink to="/cau-hinh" className={navItemClass}>

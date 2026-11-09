@@ -71,7 +71,7 @@ export const LoginPage: React.FC<{ onSuccess?: () => void }> = ({ onSuccess }) =
           <p className="text-xs text-slate-500 mt-1">Đăng nhập để quản trị công tác Đoàn xã</p>
         </div>
 
-        <button
+        <button title="Đang xử lý"
           type="button"
           onClick={signInWithGoogle}
           disabled={busy || googleBusy}
@@ -120,7 +120,7 @@ export const LoginPage: React.FC<{ onSuccess?: () => void }> = ({ onSuccess }) =
             </div>
           )}
 
-          <button
+          <button title="Đang xử lý"
             type="submit"
             disabled={busy}
             className="w-full flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-semibold text-white bg-[#1F5FBF] rounded-lg hover:bg-[#1a52a5] disabled:opacity-60 transition"

@@ -3,6 +3,8 @@ import {
   RoleId,
   DbTaskResult as TaskResult,
   DbMemberSubmission as MemberSubmission,
+  DbUnitReport as UnitReport,
+  ReviewStatus,
   DbJournalEntry as JournalEntry,
   DbCriterionSubmission as CriterionSubmission,
   DbEvidence as Evidence,
@@ -29,8 +31,9 @@ import {
   ReportType,
   CommitteePosition,
   UnitScoreCalculation,
+  PeriodStatus,
 } from '../data/types';
-import { repository } from '../data';
+import { repository, supabase, toNotification, clearAuthCache } from '../data';
 import type { EvidenceInput } from '../data/repository';
 import { formatDateVN, formatDateTimeVN, keyMemberIds } from '../mock/data';
 
@@ -103,6 +106,12 @@ interface AppContextType {
   listTaskParticipants: (taskId: string, unitId: string) => ReturnType<typeof repository.listTaskParticipants>;
   listTaskParticipantsAll: (taskId: string) => ReturnType<typeof repository.listTaskParticipantsAll>;
 
+  // Báo cáo riêng của Bí thư chi đoàn (tách biệt với kết quả chi đoàn)
+  listUnitReports: (filters?: { taskId?: string; unitId?: string; status?: ReviewStatus }) => ReturnType<typeof repository.listUnitReports>;
+  submitUnitReport: (input: { taskId: string; note?: string; evidences: EvidenceInput[] }) => ReturnType<typeof repository.submitUnitReport>;
+  reviewUnitReport: (id: string, approve: boolean, note?: string) => ReturnType<typeof repository.reviewUnitReport>;
+  listUnitReportEvidences: (reportId: string) => Promise<Evidence[]>;
+
   // Dữ liệu đọc từ Repository
   units: Unit[];
   unitTypes: UnitType[];
@@ -120,6 +129,7 @@ interface AppContextType {
   criteriaSets: CriteriaSet[];
   taskResults: TaskResult[];
   memberSubmissions: MemberSubmission[];
+  unitReports: UnitReport[];
   criterionSubmissions: CriterionSubmission[];
   evidences: Evidence[];
   notifications: Notification[];
@@ -154,7 +164,7 @@ interface AppContextType {
     unitIds: string[],
     subCriteriaContributions: Array<{ sub_criterion_id: string; contribution_score: number }>
   ) => Promise<Task>;
-  updateTask: (taskId: string, updates: Partial<Task>) => Promise<void>;
+  updateTask: (taskId: string, updates: Partial<Task>, unitIds?: string[]) => Promise<{ success: boolean; message?: string }>;
   closeTask: (taskId: string) => Promise<{ success: boolean; message?: string }>;
   deleteTask: (taskId: string) => Promise<{ success: boolean; message?: string }>;
   cloneTask: (taskId: string) => Promise<Task | null>;
@@ -238,7 +248,8 @@ interface AppContextType {
   // Quản lý Đoàn viên qua Repository
   createMember: (memberData: Omit<Member, 'id'>) => Promise<{ success: boolean; message?: string; member?: Member }>;
   updateMember: (memberId: string, updates: Partial<Member>) => Promise<{ success: boolean; message?: string }>;
-  deleteMember: (memberId: string) => Promise<void>;
+  deleteMember: (memberId: string) => Promise<{ success: boolean; message?: string }>;
+  setMemberActive: (memberId: string, active: boolean) => Promise<{ success: boolean; message?: string }>;
   bulkImportMembers: (newMembers: Array<Omit<Member, 'id'>>) => Promise<number>;
 
   // Quản lý Ban chấp hành qua Repository
@@ -250,6 +261,52 @@ interface AppContextType {
     termStart: string
   ) => Promise<{ success: boolean; message?: string }>;
   endCommitteeTerm: (committeeId: string) => Promise<void>;
+  updateCommitteeMember: (input: Parameters<typeof repository.updateCommitteeMember>[0]) => ReturnType<typeof repository.updateCommitteeMember>;
+
+  // Đánh giá, xếp loại hằng năm
+  listEvaluationPeriods: () => ReturnType<typeof repository.listEvaluationPeriods>;
+  saveEvaluationPeriod: (input: Parameters<typeof repository.saveEvaluationPeriod>[0]) => ReturnType<typeof repository.saveEvaluationPeriod>;
+  setEvaluationPeriodStatus: (id: string, status: PeriodStatus) => Promise<{ success: boolean; message?: string }>;
+  listMemberRldvLevels: (year: number) => ReturnType<typeof repository.listMemberRldvLevels>;
+  saveMemberRldvLevel: (input: Parameters<typeof repository.saveMemberRldvLevel>[0]) => ReturnType<typeof repository.saveMemberRldvLevel>;
+  listMemberDisciplines: (filters?: { memberId?: string; year?: number }) => ReturnType<typeof repository.listMemberDisciplines>;
+  saveMemberDiscipline: (input: Parameters<typeof repository.saveMemberDiscipline>[0]) => ReturnType<typeof repository.saveMemberDiscipline>;
+  deleteMemberDiscipline: (id: string) => Promise<{ success: boolean; message?: string }>;
+  listMemberEvaluations: (periodId: string) => ReturnType<typeof repository.listMemberEvaluations>;
+  generateMemberEvaluations: (periodId: string, options?: { recompute?: boolean }) => ReturnType<typeof repository.generateMemberEvaluations>;
+  saveMemberEvaluationResponse: (input: Parameters<typeof repository.saveMemberEvaluationResponse>[0]) => ReturnType<typeof repository.saveMemberEvaluationResponse>;
+  reviewMemberEvaluation: (input: Parameters<typeof repository.reviewMemberEvaluation>[0]) => ReturnType<typeof repository.reviewMemberEvaluation>;
+  finalizeMemberEvaluation: (input: Parameters<typeof repository.finalizeMemberEvaluation>[0]) => ReturnType<typeof repository.finalizeMemberEvaluation>;
+  listUnitEvaluations: (periodId: string) => ReturnType<typeof repository.listUnitEvaluations>;
+  generateUnitEvaluations: (periodId: string) => ReturnType<typeof repository.generateUnitEvaluations>;
+  finalizeUnitEvaluation: (input: Parameters<typeof repository.finalizeUnitEvaluation>[0]) => ReturnType<typeof repository.finalizeUnitEvaluation>;
+
+  // Thu nộp & Quản lý Đoàn phí (Hướng dẫn 39)
+  getUnionFeeSettings: () => ReturnType<typeof repository.getUnionFeeSettings>;
+  updateUnionFeeSettings: (updates: Parameters<typeof repository.updateUnionFeeSettings>[0]) => ReturnType<typeof repository.updateUnionFeeSettings>;
+  listUnionFeePayments: (filters?: Parameters<typeof repository.listUnionFeePayments>[0]) => ReturnType<typeof repository.listUnionFeePayments>;
+  createUnionFeePayment: (input: Parameters<typeof repository.createUnionFeePayment>[0]) => ReturnType<typeof repository.createUnionFeePayment>;
+  reviewUnionFeePayment: (input: Parameters<typeof repository.reviewUnionFeePayment>[0]) => ReturnType<typeof repository.reviewUnionFeePayment>;
+  confirmPayOsPayment: (orderCode: number, amount: number) => ReturnType<typeof repository.confirmPayOsPayment>;
+  createPayOsPaymentLink: (input: Parameters<typeof repository.createPayOsPaymentLink>[0]) => ReturnType<typeof repository.createPayOsPaymentLink>;
+  checkPayOsPaymentStatus: (orderCode: number) => ReturnType<typeof repository.checkPayOsPaymentStatus>;
+  updateMemberFeeStatus: (input: Parameters<typeof repository.updateMemberFeeStatus>[0]) => ReturnType<typeof repository.updateMemberFeeStatus>;
+  listUnitFeeDistributions: (year: number) => ReturnType<typeof repository.listUnitFeeDistributions>;
+  generateUnitFeeDistributions: (year: number) => ReturnType<typeof repository.generateUnitFeeDistributions>;
+  markFeeDistributionRefunded: (input: Parameters<typeof repository.markFeeDistributionRefunded>[0]) => ReturnType<typeof repository.markFeeDistributionRefunded>;
+  sendUnionFeeReminder: (input: Parameters<typeof repository.sendUnionFeeReminder>[0]) => ReturnType<typeof repository.sendUnionFeeReminder>;
+
+  // Lên lịch thông báo tự động (Scheduled Notifications)
+  listScheduledNotifications: () => ReturnType<typeof repository.listScheduledNotifications>;
+  createScheduledNotification: (input: Parameters<typeof repository.createScheduledNotification>[0]) => ReturnType<typeof repository.createScheduledNotification>;
+  deleteScheduledNotification: (id: string) => ReturnType<typeof repository.deleteScheduledNotification>;
+
+  // Phê duyệt tự đăng ký & chỉ tiêu đoàn viên mới
+  reviewMemberRegistration: (input: Parameters<typeof repository.reviewMemberRegistration>[0]) => ReturnType<typeof repository.reviewMemberRegistration>;
+  toggleMemberNewlyAdmitted: (memberId: string, isNewlyAdmitted: boolean) => ReturnType<typeof repository.toggleMemberNewlyAdmitted>;
+
+  // Khôi phục cài đặt gốc / Bàn giao
+  resetFactoryData: (confirmationText: string) => ReturnType<typeof repository.resetFactoryData>;
 
   // Quản lý Báo cáo qua Repository
   createReportSnapshot: (
@@ -272,8 +329,11 @@ interface AppContextType {
   // Quản lý thông báo & làm mới
   markNotificationAsRead: (id: string) => void;
   markAllNotificationsAsRead: () => void;
+  listAllNotifications: (limit?: number) => ReturnType<typeof repository.listAllNotifications>;
   lastUpdated: string;
   refreshData: () => Promise<void>;
+  /** Lỗi lần tải dữ liệu gần nhất; null = đang hoạt động bình thường. */
+  refreshError: string | null;
 
   // Toast
   toasts: ToastMessage[];
@@ -290,6 +350,9 @@ interface AppContextType {
   getEvidencesByResultId: (resultId: string) => Evidence[];
   getEvidencesBySubmissionId: (submissionId: string) => Evidence[];
   calculateUnitScores: () => UnitScoreCalculation[];
+  getUnitCriterionProgress: (unitId: string) => ReturnType<typeof repository.getUnitCriterionProgress>;
+  listTasksBySubCriterion: (subCriterionId: string) => ReturnType<typeof repository.listTasksBySubCriterion>;
+  bulkApproveTaskResults: (ids: string[], note?: string) => ReturnType<typeof repository.bulkApproveTaskResults>;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -330,6 +393,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   });
   const [taskResults, setTaskResults] = useState<TaskResult[]>([]);
   const [memberSubmissions, setMemberSubmissions] = useState<MemberSubmission[]>([]);
+  const [unitReports, setUnitReports] = useState<UnitReport[]>([]);
   const [journalEntries, setJournalEntries] = useState<JournalEntry[]>([]);
   const [criterionSubmissions, setCriterionSubmissions] = useState<CriterionSubmission[]>([]);
   const [evidences, setEvidences] = useState<Evidence[]>([]);
@@ -347,6 +411,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     max_files: 3,
     max_links: 5,
     require_gps: true,
+    default_radius_m: 100,
+    max_accuracy_m: 100,
   });
 
   // Cached calculated stats from repo
@@ -364,28 +430,42 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   // Người dùng đang đăng nhập (chế độ Supabase)
   const [currentUser, setCurrentUser] = useState<AppContextType['currentUser']>(null);
+  // Lỗi lần tải dữ liệu gần nhất (null = bình thường). Dùng để hiện banner thử lại.
+  const [refreshError, setRefreshError] = useState<string | null>(null);
 
   // Function to pull all data fresh from repository
   const refreshData = useCallback(async () => {
-    const snap = await repository.getRawSnapshot();
-    setRolesData(snap);
-    // Người dùng đăng nhập: lấy bản mới (force) để đổi tài khoản là cập nhật ngay
-    const user = await repository.getCurrentUser(true);
-    setCurrentUser(user);
-    if (user) setCurrentRole(user.role);
-    const dbStats = await repository.getDashboard(selectedYear);
+    // Quét phát hành thông báo hẹn giờ nếu đến hạn
+    repository.dispatchScheduledNotifications().catch(() => {});
+
+    try {
+      const snap = await repository.getRawSnapshot();
+      setRolesData(snap);
+      // Người dùng đăng nhập: lấy bản mới (force) để đổi tài khoản là cập nhật ngay
+      const user = await repository.getCurrentUser(true);
+      setCurrentUser(user);
+      if (user) setCurrentRole(user.role);
+      const dbStats = await repository.getDashboard(selectedYear);
     setStats({
-      pendingCount: dbStats.pendingCount,
-      taskPendingCount: dbStats.taskPendingCount,
-      criteriaPendingCount: dbStats.criteriaPendingCount,
-      overdueUnitsCount: dbStats.overdueUnitsCount,
-      dueSoon7DaysCount: dbStats.dueSoon7DaysCount,
-      newMembersCount: dbStats.newMembersCount,
-      totalMembers: dbStats.totalMembers,
-    });
-    const scores = await repository.calculateUnitScores(selectedYear);
-    setUnitScores(scores);
-    setLastUpdated(new Date().toISOString());
+        pendingCount: dbStats.pendingCount,
+        taskPendingCount: dbStats.taskPendingCount,
+        criteriaPendingCount: dbStats.criteriaPendingCount,
+        overdueUnitsCount: dbStats.overdueUnitsCount,
+        dueSoon7DaysCount: dbStats.dueSoon7DaysCount,
+        newMembersCount: dbStats.newMembersCount,
+        totalMembers: dbStats.totalMembers,
+      });
+      const scores = await repository.calculateUnitScores(selectedYear);
+      setUnitScores(scores);
+      setLastUpdated(new Date().toISOString());
+      setRefreshError(null);
+    } catch (err) {
+      // Không nuốt lỗi: ghi lại để giao diện hiện banner "không tải được dữ liệu"
+      // kèm nút thử lại. Trước đây lỗi làm refreshData reject âm thầm -> UI đứng
+      // ở giá trị mặc định mà người dùng không biết vì sao.
+      console.error('[AppContext] refreshData thất bại:', err);
+      setRefreshError(err instanceof Error ? err.message : String(err));
+    }
   }, [selectedYear]);
 
   const setRolesData = (snap: any) => {
@@ -404,11 +484,20 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setCriteriaSets(snap.criteriaSets);
     criteriaSetsRef.current = snap.criteriaSets;
     if (snap.criteriaSets.length > 0) {
-      // Giữ bộ đang chọn nếu nó vẫn tồn tại; ngược lại chọn bộ đầu
-      setCriteriaSet(prev => snap.criteriaSets.find((s: CriteriaSet) => s.id === prev.id) ?? snap.criteriaSets[0]);
+      // Giữ bộ đang chọn nếu nó vẫn tồn tại; ngược lại chọn bộ đang hoạt động
+      // mới nhất. Bộ đã lưu trữ (archived_at) chỉ dùng làm dự phòng cuối cùng —
+      // nếu không, mở app sẽ rơi vào bộ của niên độ cũ.
+      setCriteriaSet(prev => {
+        const kept = snap.criteriaSets.find((s: CriteriaSet) => s.id === prev.id);
+        if (kept) return kept;
+        const active = snap.criteriaSets.filter((s: CriteriaSet) => !s.archived_at);
+        const pool = active.length > 0 ? active : snap.criteriaSets;
+        return [...pool].sort((a: CriteriaSet, b: CriteriaSet) => b.year - a.year)[0];
+      });
     }
     setTaskResults(snap.taskResults);
     setMemberSubmissions(snap.memberSubmissions ?? []);
+    setUnitReports(snap.unitReports ?? []);
     setCriterionSubmissions(snap.criterionSubmissions);
     setEvidences(snap.evidences);
     setNotifications(snap.notifications);
@@ -437,16 +526,67 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setToasts(prev => prev.filter(t => t.id !== id));
   }, []);
 
+  // Realtime subscription cho thông báo: cập nhật tức thì khi có thông báo mới hoặc đọc thông báo
+  useEffect(() => {
+    const client = supabase;
+    if (!client || !currentUser?.memberId) return;
+
+    const channel = client
+      .channel('realtime_notifications')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'notifications',
+          filter: `recipient_id=eq.${currentUser.memberId}`,
+        },
+        (payload) => {
+          if (payload.eventType === 'INSERT') {
+            const newNotif = toNotification(payload.new as any);
+            setNotifications(prev => [newNotif, ...prev.filter(n => n.id !== newNotif.id)]);
+            showToast({
+              title: newNotif.title,
+              description: newNotif.body,
+              type: newNotif.level === 'red' ? 'error' : newNotif.level === 'orange' ? 'info' : 'success',
+            });
+          } else if (payload.eventType === 'UPDATE') {
+            const updated = toNotification(payload.new as any);
+            setNotifications(prev => prev.map(n => n.id === updated.id ? updated : n));
+          } else if (payload.eventType === 'DELETE') {
+            const delId = String((payload.old as any)?.id);
+            setNotifications(prev => prev.filter(n => n.id !== delId));
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      client.removeChannel(channel);
+    };
+  }, [currentUser?.memberId, showToast]);
+
   // Notifications
-  const markNotificationAsRead = useCallback((id: string) => {
+  const markNotificationAsRead = useCallback(async (id: string) => {
+    // 1. Cập nhật lạc quan (optimistic UI)
     setNotifications(prev =>
       prev.map(n => (n.id === id ? { ...n, is_read: true } : n))
     );
+    // 2. Ghi DB thật qua repository
+    await repository.markNotificationAsRead(id);
   }, []);
 
-  const markAllNotificationsAsRead = useCallback(() => {
+  const markAllNotificationsAsRead = useCallback(async () => {
+    // 1. Cập nhật lạc quan
     setNotifications(prev => prev.map(n => ({ ...n, is_read: true })));
+    // 2. Ghi DB thật qua repository
+    await repository.markAllNotificationsAsRead();
   }, []);
+
+  const listAllNotifications = useCallback(
+    (limit = 100) => repository.listAllNotifications(limit),
+    []
+  );
 
   // Reviews
   const approveTaskResult = useCallback(
@@ -504,13 +644,14 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   );
 
   const updateTask = useCallback(
-    async (taskId: string, updates: Partial<Task>) => {
-      const snap = await repository.getRawSnapshot();
-      const task = snap.tasks.find(t => t.id === taskId);
-      if (task) {
-        Object.assign(task, updates);
-      }
-      await refreshData();
+    async (taskId: string, updates: Partial<Task>, unitIds?: string[]) => {
+      const res = await repository.updateTask({
+        taskId,
+        taskData: updates,
+        unitIds,
+      });
+      if (res.success) await refreshData();
+      return res;
     },
     [refreshData]
   );
@@ -913,6 +1054,36 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     []
   );
 
+  // --- Báo cáo riêng của Bí thư chi đoàn ---
+  const listUnitReports = useCallback(
+    (filters?: { taskId?: string; unitId?: string; status?: ReviewStatus }) =>
+      repository.listUnitReports(filters),
+    []
+  );
+
+  const submitUnitReport = useCallback(
+    async (input: { taskId: string; note?: string; evidences: EvidenceInput[] }) => {
+      const res = await repository.submitUnitReport(input);
+      if (res.success) await refreshData();
+      return res;
+    },
+    [refreshData]
+  );
+
+  const reviewUnitReport = useCallback(
+    async (id: string, approve: boolean, note?: string) => {
+      const res = await repository.reviewUnitReport(id, approve, note);
+      if (res.success) await refreshData();
+      return res;
+    },
+    [refreshData]
+  );
+
+  const listUnitReportEvidences = useCallback(
+    (reportId: string) => repository.listUnitReportEvidences(reportId),
+    []
+  );
+
   const listTaskParticipants = useCallback(
     (taskId: string, unitId: string) => repository.listTaskParticipants(taskId, unitId),
     []
@@ -995,8 +1166,18 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
 
   const deleteMember = useCallback(
     async (memberId: string) => {
-      await repository.deleteMember(memberId);
-      await refreshData();
+      const res = await repository.deleteMember(memberId);
+      if (res.success) await refreshData();
+      return res;
+    },
+    [refreshData]
+  );
+
+  const setMemberActive = useCallback(
+    async (memberId: string, active: boolean) => {
+      const res = await repository.setMemberActive(memberId, active);
+      if (res.success) await refreshData();
+      return res;
     },
     [refreshData]
   );
@@ -1026,7 +1207,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         isStanding,
         termStart,
       });
-      if (res.success) await refreshData();
+      if (res.success) {
+        // Bổ nhiệm bí thư có thể đổi quyền tài khoản (trigger DB đồng bộ) -> xoá cache
+        clearAuthCache();
+        await refreshData();
+      }
       return res;
     },
     [refreshData]
@@ -1035,14 +1220,187 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const endCommitteeTerm = useCallback(
     async (committeeId: string) => {
       await repository.endCommitteeTerm(committeeId);
+      // Kết thúc nhiệm kỳ có thể hạ quyền bí thư -> xoá cache
+      clearAuthCache();
       await refreshData();
     },
     [refreshData]
   );
 
+  const updateCommitteeMember = useCallback(
+    async (input: Parameters<typeof repository.updateCommitteeMember>[0]) => {
+      const res = await repository.updateCommitteeMember(input);
+      if (res.success) {
+        clearAuthCache();
+        await refreshData();
+      }
+      return res;
+    },
+    [refreshData]
+  );
+
+  // Đánh giá, xếp loại hằng năm
+  const listEvaluationPeriods = useCallback(() => repository.listEvaluationPeriods(), []);
+  const saveEvaluationPeriod = useCallback(
+    (input: Parameters<typeof repository.saveEvaluationPeriod>[0]) => repository.saveEvaluationPeriod(input),
+    []
+  );
+  const setEvaluationPeriodStatus = useCallback(
+    (id: string, status: PeriodStatus) => repository.setEvaluationPeriodStatus(id, status),
+    []
+  );
+  const listMemberRldvLevels = useCallback(
+    (year: number) => repository.listMemberRldvLevels(year),
+    []
+  );
+  const saveMemberRldvLevel = useCallback(
+    (input: Parameters<typeof repository.saveMemberRldvLevel>[0]) => repository.saveMemberRldvLevel(input),
+    []
+  );
+  const listMemberDisciplines = useCallback(
+    (filters?: { memberId?: string; year?: number }) => repository.listMemberDisciplines(filters),
+    []
+  );
+  const saveMemberDiscipline = useCallback(
+    (input: Parameters<typeof repository.saveMemberDiscipline>[0]) => repository.saveMemberDiscipline(input),
+    []
+  );
+  const deleteMemberDiscipline = useCallback(
+    (id: string) => repository.deleteMemberDiscipline(id),
+    []
+  );
+  const listMemberEvaluations = useCallback(
+    (periodId: string) => repository.listMemberEvaluations(periodId),
+    []
+  );
+  const generateMemberEvaluations = useCallback(
+    (periodId: string, options?: { recompute?: boolean }) => repository.generateMemberEvaluations(periodId, options),
+    []
+  );
+  const saveMemberEvaluationResponse = useCallback(
+    (input: Parameters<typeof repository.saveMemberEvaluationResponse>[0]) => repository.saveMemberEvaluationResponse(input),
+    []
+  );
+  const reviewMemberEvaluation = useCallback(
+    (input: Parameters<typeof repository.reviewMemberEvaluation>[0]) => repository.reviewMemberEvaluation(input),
+    []
+  );
+  const finalizeMemberEvaluation = useCallback(
+    (input: Parameters<typeof repository.finalizeMemberEvaluation>[0]) => repository.finalizeMemberEvaluation(input),
+    []
+  );
+  const listUnitEvaluations = useCallback(
+    (periodId: string) => repository.listUnitEvaluations(periodId),
+    []
+  );
+  const generateUnitEvaluations = useCallback(
+    (periodId: string) => repository.generateUnitEvaluations(periodId),
+    []
+  );
+  const finalizeUnitEvaluation = useCallback(
+    (input: Parameters<typeof repository.finalizeUnitEvaluation>[0]) => repository.finalizeUnitEvaluation(input),
+    []
+  );
+
+  // Thu nộp & Quản lý Đoàn phí (Hướng dẫn 39)
+  const getUnionFeeSettings = useCallback(() => repository.getUnionFeeSettings(), []);
+  const updateUnionFeeSettings = useCallback(
+    (updates: Parameters<typeof repository.updateUnionFeeSettings>[0]) => repository.updateUnionFeeSettings(updates),
+    []
+  );
+  const listUnionFeePayments = useCallback(
+    (filters?: Parameters<typeof repository.listUnionFeePayments>[0]) => repository.listUnionFeePayments(filters),
+    []
+  );
+  const createUnionFeePayment = useCallback(
+    (input: Parameters<typeof repository.createUnionFeePayment>[0]) => repository.createUnionFeePayment(input),
+    []
+  );
+  const reviewUnionFeePayment = useCallback(
+    (input: Parameters<typeof repository.reviewUnionFeePayment>[0]) => repository.reviewUnionFeePayment(input),
+    []
+  );
+  const confirmPayOsPayment = useCallback(
+    (orderCode: number, amount: number) => repository.confirmPayOsPayment(orderCode, amount),
+    []
+  );
+  const createPayOsPaymentLink = useCallback(
+    (input: Parameters<typeof repository.createPayOsPaymentLink>[0]) => repository.createPayOsPaymentLink(input),
+    []
+  );
+  const checkPayOsPaymentStatus = useCallback(
+    (orderCode: number) => repository.checkPayOsPaymentStatus(orderCode),
+    []
+  );
+  const updateMemberFeeStatus = useCallback(
+    async (input: Parameters<typeof repository.updateMemberFeeStatus>[0]) => {
+      const res = await repository.updateMemberFeeStatus(input);
+      if (res.success) await refreshData();
+      return res;
+    },
+    [refreshData]
+  );
+  const listUnitFeeDistributions = useCallback(
+    (year: number) => repository.listUnitFeeDistributions(year),
+    []
+  );
+  const generateUnitFeeDistributions = useCallback(
+    (year: number) => repository.generateUnitFeeDistributions(year),
+    []
+  );
+  const markFeeDistributionRefunded = useCallback(
+    (input: Parameters<typeof repository.markFeeDistributionRefunded>[0]) => repository.markFeeDistributionRefunded(input),
+    []
+  );
+  const sendUnionFeeReminder = useCallback(
+    (input: Parameters<typeof repository.sendUnionFeeReminder>[0]) => repository.sendUnionFeeReminder(input),
+    []
+  );
+
+  // Scheduled Notifications
+  const listScheduledNotifications = useCallback(
+    () => repository.listScheduledNotifications(),
+    []
+  );
+  const createScheduledNotification = useCallback(
+    (input: Parameters<typeof repository.createScheduledNotification>[0]) => repository.createScheduledNotification(input),
+    []
+  );
+  const deleteScheduledNotification = useCallback(
+    (id: string) => repository.deleteScheduledNotification(id),
+    []
+  );
+
+  // Phê duyệt đăng ký & chỉ tiêu mới
+  const reviewMemberRegistration = useCallback(
+    async (input: Parameters<typeof repository.reviewMemberRegistration>[0]) => {
+      const res = await repository.reviewMemberRegistration(input);
+      if (res.success) await refreshData();
+      return res;
+    },
+    [refreshData]
+  );
+  const toggleMemberNewlyAdmitted = useCallback(
+    async (memberId: string, isNewlyAdmitted: boolean) => {
+      const res = await repository.toggleMemberNewlyAdmitted(memberId, isNewlyAdmitted);
+      if (res.success) await refreshData();
+      return res;
+    },
+    [refreshData]
+  );
+
+  // Khôi phục cài đặt gốc
+  const resetFactoryData = useCallback(
+    async (confirmationText: string) => {
+      const res = await repository.resetFactoryData(confirmationText);
+      if (res.success) await refreshData();
+      return res;
+    },
+    [refreshData]
+  );
+
   // Reports
-  const createReportSnapshot = useCallback(
-    async (
+  const createReportSnapshot = useCallback(    async (
       type: ReportType,
       periodStart: string,
       periodEnd: string,
@@ -1103,6 +1461,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   const updateProfileRole = useCallback(
     async (profileId: string, newRole: RoleId) => {
       await repository.setProfileRole(profileId, newRole);
+      // Xoá cache currentUser để lần đọc kế tiếp lấy quyền mới từ DB ngay
+      clearAuthCache();
       await refreshData();
     },
     [refreshData]
@@ -1156,6 +1516,62 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   );
   const calculateUnitScores = useCallback(() => unitScores, [unitScores]);
 
+  /**
+   * Tiến độ KPI của một chi đoàn — tính HOÀN TOÀN phía client từ dữ liệu đã nạp
+   * (subCriteria, criteria, units, tasks, taskResults). Không phụ thuộc RPC
+   * nên vẫn chạy được khi chưa chạy migration phase11.
+   */
+  const getUnitCriterionProgress = useCallback(
+    async (unitId: string) => {
+      const unit = units.find(u => u.id === unitId);
+      if (!unit) return [];
+
+      const applicable = subCriteria.filter(sc => {
+        const unitIds = sc.unit_ids ?? [];
+        if (unitIds.length > 0) return unitIds.includes(unitId);
+        const typeIds = sc.unit_type_ids ?? [];
+        if (typeIds.length === 0) return true;
+        return typeIds.includes(unit.unit_type_id);
+      });
+
+      return applicable.map(sc => {
+        const crit = criteria.find(c => c.id === sc.criterion_id);
+        const linkedTasks = tasks.filter(
+          t => t.source_sub_criterion_id === sc.id && t.status !== 'draft'
+        );
+        const results = taskResults.filter(r => r.unit_id === unitId);
+        const doneTasks = linkedTasks.filter(t =>
+          results.some(r => r.task_id === t.id && r.status === 'approved')
+        ).length;
+        const pendingTasks = linkedTasks.filter(t =>
+          results.some(r => r.task_id === t.id && r.status === 'pending')
+        ).length;
+        return {
+          subCriterionId: sc.id,
+          criterionName: crit?.name ?? '',
+          subName: sc.condition_text,
+          maxScore: sc.max_score,
+          totalTasks: linkedTasks.length,
+          doneTasks,
+          pendingTasks,
+        };
+      });
+    },
+    [units, subCriteria, criteria, tasks, taskResults]
+  );
+  const listTasksBySubCriterion = useCallback(
+    (subCriterionId: string) => repository.listTasksBySubCriterion(subCriterionId),
+    []
+  );
+  const bulkApproveTaskResults = useCallback(
+    async (ids: string[], note?: string) => {
+      const res = await repository.bulkApproveTaskResults(ids, note);
+      if (res.success) await refreshData();
+      return res;
+    },
+    [refreshData]
+  );
+
   const value: AppContextType = {
     currentRole,
     setCurrentRole,
@@ -1181,9 +1597,49 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     submitMemberResult,
     reviewMemberSubmission,
     listMemberSubmissionEvidences,
+    listUnitReports,
+    submitUnitReport,
+    reviewUnitReport,
+    listUnitReportEvidences,
     listTaskParticipants,
     listTaskParticipantsAll,
+    listEvaluationPeriods,
+    saveEvaluationPeriod,
+    setEvaluationPeriodStatus,
+    listMemberRldvLevels,
+    saveMemberRldvLevel,
+    listMemberDisciplines,
+    saveMemberDiscipline,
+    deleteMemberDiscipline,
+    listMemberEvaluations,
+    generateMemberEvaluations,
+    saveMemberEvaluationResponse,
+    reviewMemberEvaluation,
+    finalizeMemberEvaluation,
+    listUnitEvaluations,
+    generateUnitEvaluations,
+    finalizeUnitEvaluation,
+    getUnionFeeSettings,
+    updateUnionFeeSettings,
+    listUnionFeePayments,
+    createUnionFeePayment,
+    reviewUnionFeePayment,
+    confirmPayOsPayment,
+    createPayOsPaymentLink,
+    checkPayOsPaymentStatus,
+    updateMemberFeeStatus,
+    listUnitFeeDistributions,
+    generateUnitFeeDistributions,
+    markFeeDistributionRefunded,
+    sendUnionFeeReminder,
+    listScheduledNotifications,
+    createScheduledNotification,
+    deleteScheduledNotification,
+    reviewMemberRegistration,
+    toggleMemberNewlyAdmitted,
+    resetFactoryData,
     memberSubmissions,
+    unitReports,
     units,
     unitTypes,
     ethnicities,
@@ -1259,9 +1715,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     createMember,
     updateMember,
     deleteMember,
+    setMemberActive,
     bulkImportMembers,
     addCommitteeMember,
     endCommitteeTerm,
+    updateCommitteeMember,
     createReportSnapshot,
     updateYearlySettings,
     createUnitType,
@@ -1272,8 +1730,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     linkProfileMember,
     markNotificationAsRead,
     markAllNotificationsAsRead,
+    listAllNotifications,
     lastUpdated,
     refreshData,
+    refreshError,
     toasts,
     showToast,
     removeToast,
@@ -1286,6 +1746,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     getEvidencesByResultId,
     getEvidencesBySubmissionId,
     calculateUnitScores,
+    getUnitCriterionProgress,
+    listTasksBySubCriterion,
+    bulkApproveTaskResults,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

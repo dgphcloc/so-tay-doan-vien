@@ -131,7 +131,7 @@ export const TaskResultsPanel: React.FC = () => {
           {activeSets.map(set => {
             const critCount = criteriaOf(set.id).length;
             return (
-              <button
+              <button title="tiêu chí • năm"
                 key={set.id}
                 type="button"
                 onClick={() => setLevel({ ...EMPTY, set: set.id })}
@@ -150,7 +150,7 @@ export const TaskResultsPanel: React.FC = () => {
           })}
 
           {tasksWithoutCriteria.length > 0 && (
-            <button
+            <button title="Nhiệm vụ chưa gắn tiêu chí nhiệm vụ"
               type="button"
               onClick={() => setLevel({ ...EMPTY, set: '__none__' })}
               className="w-full p-3.5 bg-white rounded-xl border border-dashed border-slate-300 hover:border-slate-400 text-left flex items-center justify-between gap-3"
@@ -177,7 +177,7 @@ export const TaskResultsPanel: React.FC = () => {
         ) : (
           <div className="space-y-2">
             {tasksWithoutCriteria.map(t => (
-              <button
+              <button title="chi đoàn được giao"
                 key={t.id}
                 type="button"
                 onClick={() => setLevel({ ...EMPTY, set: '__none__', task: t.id })}
@@ -213,7 +213,7 @@ export const TaskResultsPanel: React.FC = () => {
                 {inSection.map(c => {
                   const taskCount = tasksOfCriterion(c.id).length;
                   return (
-                    <button
+                    <button title=". tiêu chí con • nhiệm vụ gắn tiêu chí này"
                       key={c.id}
                       type="button"
                       onClick={() => setLevel({ ...EMPTY, set: level.set, criterion: c.id })}
@@ -252,7 +252,7 @@ export const TaskResultsPanel: React.FC = () => {
               const myTasks = critTasks.filter(t => taskUnits.some(tu => tu.task_id === t.id && tu.unit_id === u.id));
               const done = myTasks.filter(t => resultOf(t.id, u.id)?.status === 'approved').length;
               return (
-                <button
+                <button title="/ nhiệm vụ đã duyệt"
                   key={u.id}
                   type="button"
                   onClick={() => setLevel({ ...level, unit: u.id, task: null })}
@@ -289,7 +289,7 @@ export const TaskResultsPanel: React.FC = () => {
         ) : (
           <div className="space-y-2">
             {myTasks.map(t => (
-              <button
+              <button title="Hạn"
                 key={t.id}
                 type="button"
                 onClick={() => setLevel({ ...level, task: t.id })}
@@ -383,6 +383,7 @@ const Breadcrumb: React.FC<{ crumbs: Crumb[] }> = ({ crumbs }) => (
         {i > 0 && <ChevronRight className="w-3 h-3 text-slate-300" />}
         <button
           type="button"
+          title="Quay lại cấp trước trong danh sách"
           onClick={c.onClick}
           className={`font-bold ${i === crumbs.length - 1 ? 'text-slate-700' : 'text-[#1F5FBF] hover:underline'}`}
         >

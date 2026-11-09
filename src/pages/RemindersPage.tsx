@@ -19,9 +19,13 @@ import {
   UserCheck,
   ChevronRight,
   Info,
+  Search,
+  Eye,
+  Loader2,
 } from 'lucide-react';
 import { Unit, Member, UnitTypeId } from '../types';
 import { formatDateTimeVN, formatDateVN, getRelativeDate } from '../mock/data';
+import { removeVietnameseTones } from '../utils/vietnamese';
 
 interface CustomReminderItem {
   id: string;
@@ -48,9 +52,13 @@ export const RemindersPage: React.FC = () => {
     resolveWarning,
     syncWarnings,
     sendManualReminder,
+    listAllNotifications,
     getUnitById,
     getTaskById,
     showToast,
+    listScheduledNotifications,
+    createScheduledNotification,
+    deleteScheduledNotification,
   } = useApp();
 
   // Mở trang là tự sinh cảnh báo quá hạn / sắp hết hạn (nếu có cảnh báo mới)
@@ -69,76 +77,79 @@ export const RemindersPage: React.FC = () => {
   const [statusFilter, setStatusFilter] = useState<'all' | 'sent' | 'pending' | 'cancelled'>('all');
   const [typeFilter, setTypeFilter] = useState<'all' | 'task' | 'criteria' | 'system'>('all');
 
-  // Custom reminders state
-  const [reminderList, setReminderList] = useState<CustomReminderItem[]>([
-    {
-      id: 'rem_1',
-      type: 'task_deadline',
-      typeLabel: 'Hạn nhiệm vụ',
-      recipientType: 'unit',
-      recipientName: 'Chi đoàn Ấp 1, Chi đoàn Ấp 2, Chi đoàn Ấp 3',
-      recipientSubtext: 'Bí thư các Chi đoàn',
-      content: 'Đôn đốc nộp báo cáo Chiến dịch Tình nguyện Mùa hè xanh (còn 3 ngày nữa đến hạn chót).',
-      sendTime: getRelativeDate(0, -4),
-      status: 'sent',
-      level: 'orange',
-    },
-    {
-      id: 'rem_2',
-      type: 'criteria_deadline',
-      typeLabel: 'Hạn tiêu chí',
-      recipientType: 'unit',
-      recipientName: 'Toàn bộ 31 Chi đoàn',
-      recipientSubtext: 'Bí thư Chi đoàn cơ sở',
-      content: 'Nhắc nhở cập nhật minh chứng tiêu chí Quản lý đoàn viên & sổ Đoàn điện tử (còn 7 ngày).',
-      sendTime: getRelativeDate(-1, -2),
-      status: 'sent',
-      level: 'yellow',
-    },
-    {
-      id: 'rem_3',
-      type: 'system_alert',
-      typeLabel: 'Cảnh báo hệ thống',
-      recipientType: 'unit',
-      recipientName: 'Chi đoàn Trường THCS Hòa Bình',
-      recipientSubtext: 'Bí thư Chi đoàn',
-      content: 'Cảnh báo: Lệch số liệu đoàn viên khai báo (32) so với thực tế cập nhật trong hệ thống (28).',
-      sendTime: getRelativeDate(0, -1),
-      status: 'sent',
-      level: 'red',
-    },
-    {
-      id: 'rem_4',
-      type: 'task_deadline',
-      typeLabel: 'Hạn nhiệm vụ',
-      recipientType: 'unit',
-      recipientName: 'Chi đoàn Dân quân cơ động',
-      recipientSubtext: 'Đ/c Lê Hoàng Nam',
-      content: 'Hẹn giờ tự động: Nhắc nộp danh sách đoàn viên tham gia Hội thao Quốc phòng trước 17h00 ngày mai.',
-      sendTime: getRelativeDate(1, 8),
-      status: 'pending',
-      level: 'orange',
-      isScheduled: true,
-    },
-    {
-      id: 'rem_5',
-      type: 'criteria_deadline',
-      typeLabel: 'Hạn tiêu chí',
-      recipientType: 'member',
-      recipientName: 'Đ/c Phạm Văn Minh (Ấp 3)',
-      recipientSubtext: 'Bí thư Chi đoàn',
-      content: 'Nhắc hoàn thiện hồ sơ sinh hoạt Chi đoàn chuyên đề tháng 10.',
-      sendTime: getRelativeDate(-2, 0),
-      status: 'cancelled',
-      level: 'yellow',
-    },
-  ]);
+  // Lịch sử lời nhắc lấy THẬT từ Database
+  const [reminderList, setReminderList] = useState<CustomReminderItem[]>([]);
+
+  // Tải thông báo và lịch hẹn thật từ DB
+  useEffect(() => {
+    (async () => {
+      try {
+        const [notifs, scheduled] = await Promise.all([
+          listAllNotifications(100),
+          listScheduledNotifications(),
+        ]);
+        const mappedSent: CustomReminderItem[] = notifs.map(n => {
+          const recMember = members.find(m => String(m.id) === String(n.recipient_id));
+          const recUnit = recMember ? getUnitById(recMember.unit_id) : null;
+          return {
+            id: n.id,
+            type: n.task_id ? 'task_deadline' : 'custom',
+            typeLabel: n.type === 'system' ? 'Hệ thống' : 'Nhắc nhở',
+            recipientType: 'member',
+            recipientName: recMember ? recMember.full_name : `Đoàn viên #${n.recipient_id}`,
+            recipientSubtext: recUnit ? recUnit.name : undefined,
+            content: n.title ? `${n.title}: ${n.body}` : n.body,
+            sendTime: n.created_at,
+            status: 'sent',
+            level: n.level,
+          };
+        });
+
+        const mappedSched: CustomReminderItem[] = scheduled.filter(s => !s.is_sent).map(s => {
+          const targetMember = s.recipient_type === 'member' && s.target_id ? members.find(m => String(m.id) === String(s.target_id)) : null;
+          const targetUnit = s.recipient_type === 'unit' && s.target_id ? getUnitById(String(s.target_id)) : null;
+          return {
+            id: s.id,
+            type: 'custom',
+            typeLabel: 'Lịch hẹn gửi',
+            recipientType: s.recipient_type === 'all' ? 'unit' : s.recipient_type,
+            recipientName: s.recipient_type === 'all' ? 'Toàn bộ đoàn viên' : targetMember ? targetMember.full_name : targetUnit ? targetUnit.name : 'Chi đoàn/Đoàn viên',
+            recipientSubtext: 'Hẹn giờ tự động',
+            content: `${s.title}: ${s.content}`,
+            sendTime: s.scheduled_at,
+            status: 'pending',
+            level: s.level,
+            isScheduled: true,
+          };
+        });
+
+        setReminderList([...mappedSched, ...mappedSent]);
+      } catch (e) {
+        console.error('Không tải được lịch sử thông báo:', e);
+      }
+    })();
+  }, [members, units, listAllNotifications, listScheduledNotifications, getUnitById]);
+
+  // Số đoàn viên đang hoạt động thực tế của từng chi đoàn
+  const activeMemberCountByUnit = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const m of members) {
+      if (!m.is_active) continue;
+      map.set(m.unit_id, (map.get(m.unit_id) || 0) + 1);
+    }
+    return map;
+  }, [members]);
 
   // Modal "Tạo nhắc nhở tùy biến"
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [formRecipientKind, setFormRecipientKind] = useState<'unit' | 'member'>('unit');
   const [formSelectedUnitId, setFormSelectedUnitId] = useState<string>(units[0]?.id || '');
   const [formSelectedMemberId, setFormSelectedMemberId] = useState<string>(members[0]?.id || '');
+  const [memberSearchQuery, setMemberSearchQuery] = useState('');
+  const [isMemberDropdownOpen, setIsMemberDropdownOpen] = useState(false);
+  const [selectedReminderDetail, setSelectedReminderDetail] = useState<CustomReminderItem | null>(null);
+  const [isSendingAll, setIsSendingAll] = useState(false);
+  const [isSendingCustom, setIsSendingCustom] = useState(false);
   const [formTitle, setFormTitle] = useState('');
   const [formContent, setFormContent] = useState('');
   const [formLevel, setFormLevel] = useState<'yellow' | 'orange' | 'red'>('orange');
@@ -221,6 +232,7 @@ export const RemindersPage: React.FC = () => {
 
   // Hành động "Gửi tất cả hôm nay"
   const handleSendAllToday = async () => {
+    if (isSendingAll) return;
     if (dueTodayReminders.length === 0) {
       showToast({
         title: 'Không có thông báo cần gửi',
@@ -230,123 +242,155 @@ export const RemindersPage: React.FC = () => {
       return;
     }
 
-    // Gửi thật tới bí thư của từng nhóm chi đoàn chưa nộp
-    let totalSent = 0;
-    const newItems: CustomReminderItem[] = [];
-    for (let index = 0; index < dueTodayReminders.length; index++) {
-      const d = dueTodayReminders[index];
-      const unitIds = d.unsubmittedUnits.map(u => u.id);
-      if (unitIds.length === 0) continue;
-      try {
-        const res = await sendManualReminder({
-          recipientType: 'units',
-          unitIds,
-          title: d.kind === 'task' ? `Đôn đốc nhiệm vụ: ${d.title}` : `Đôn đốc tiêu chí: ${d.title}`,
+    setIsSendingAll(true);
+    try {
+      // Gửi thật tới bí thư của từng nhóm chi đoàn chưa nộp
+      let totalSent = 0;
+      const newItems: CustomReminderItem[] = [];
+      for (let index = 0; index < dueTodayReminders.length; index++) {
+        const d = dueTodayReminders[index];
+        const unitIds = d.unsubmittedUnits.map(u => u.id);
+        if (unitIds.length === 0) continue;
+        try {
+          const res = await sendManualReminder({
+            recipientType: 'units',
+            unitIds,
+            title: d.kind === 'task' ? `Đôn đốc nhiệm vụ: ${d.title}` : `Đôn đốc tiêu chí: ${d.title}`,
+            content: `Đôn đốc khẩn: "${d.title}" - Hạn chót ${formatDateVN(d.dueDate)} (${d.urgencyLabel}). Vui lòng nộp minh chứng ngay.`,
+            level: d.urgency,
+          });
+          totalSent += res.count;
+        } catch (e) {
+          showToast({ title: 'Không gửi được nhắc nhở', description: e instanceof Error ? e.message : '', type: 'error' });
+          continue;
+        }
+        newItems.push({
+          id: `bulk_today_${Date.now()}_${index}`,
+          type: d.kind === 'task' ? 'task_deadline' : 'criteria_deadline',
+          typeLabel: d.kind === 'task' ? 'Hạn nhiệm vụ' : 'Hạn tiêu chí',
+          recipientType: 'unit',
+          recipientName: `${d.unsubmittedUnits.length} Chi đoàn chưa nộp (${d.unsubmittedUnits.slice(0, 3).map(u => u.name).join(', ')}${d.unsubmittedUnits.length > 3 ? '...' : ''})`,
+          recipientSubtext: `Mốc: ${d.urgencyLabel}`,
           content: `Đôn đốc khẩn: "${d.title}" - Hạn chót ${formatDateVN(d.dueDate)} (${d.urgencyLabel}). Vui lòng nộp minh chứng ngay.`,
+          sendTime: new Date().toISOString(),
+          status: 'sent',
           level: d.urgency,
         });
-        totalSent += res.count;
-      } catch (e) {
-        showToast({ title: 'Không gửi được nhắc nhở', description: e instanceof Error ? e.message : '', type: 'error' });
-        continue;
       }
-      newItems.push({
-        id: `bulk_today_${Date.now()}_${index}`,
-        type: d.kind === 'task' ? 'task_deadline' : 'criteria_deadline',
-        typeLabel: d.kind === 'task' ? 'Hạn nhiệm vụ' : 'Hạn tiêu chí',
-        recipientType: 'unit',
-        recipientName: `${d.unsubmittedUnits.length} Chi đoàn chưa nộp (${d.unsubmittedUnits.slice(0, 3).map(u => u.name).join(', ')}${d.unsubmittedUnits.length > 3 ? '...' : ''})`,
-        recipientSubtext: `Mốc: ${d.urgencyLabel}`,
-        content: `Đôn đốc khẩn: "${d.title}" - Hạn chót ${formatDateVN(d.dueDate)} (${d.urgencyLabel}). Vui lòng nộp minh chứng ngay.`,
-        sendTime: new Date().toISOString(),
-        status: 'sent',
-        level: d.urgency,
+
+      setReminderList(prev => [...newItems, ...prev]);
+
+      showToast({
+        title: 'Đã gửi thông báo hàng loạt',
+        description: `Đã gửi tới bí thư của ${totalSent} chi đoàn.`,
+        type: 'success',
       });
+    } finally {
+      setIsSendingAll(false);
     }
-
-    setReminderList(prev => [...newItems, ...prev]);
-
-    showToast({
-      title: 'Đã gửi thông báo hàng loạt',
-      description: `Đã gửi tới bí thư của ${totalSent} chi đoàn.`,
-      type: 'success',
-    });
   };
+
+  // Lọc danh sách đoàn viên tìm kiếm theo tên, số điện thoại, chi đoàn
+  const filteredCandidates = useMemo(() => {
+    if (!memberSearchQuery.trim()) return members.slice(0, 50);
+    const q = removeVietnameseTones(memberSearchQuery.toLowerCase());
+    return members.filter(m => {
+      const uName = getUnitById(m.unit_id)?.name || '';
+      const text = removeVietnameseTones(`${m.full_name} ${m.phone} ${uName}`.toLowerCase());
+      return text.includes(q);
+    }).slice(0, 50);
+  }, [members, memberSearchQuery, getUnitById]);
 
   // Hành động Tạo nhắc nhở tùy biến
   const handleCreateCustomReminder = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSendingCustom) return;
     if (!formContent.trim()) {
       showToast({ title: 'Vui lòng nhập nội dung nhắc nhở', type: 'error' });
       return;
     }
 
-    let recipientName = '';
-    let recipientSub = '';
+    setIsSendingCustom(true);
+    try {
+      let recipientName = '';
+      let recipientSub = '';
 
-    if (formRecipientKind === 'unit') {
-      const u = units.find(item => item.id === formSelectedUnitId);
-      recipientName = u ? u.name : 'Chi đoàn cơ sở';
-      recipientSub = 'Bí thư Chi đoàn';
-    } else {
-      const m = members.find(item => item.id === formSelectedMemberId);
-      recipientName = m ? m.full_name : 'Đoàn viên';
-      recipientSub = m ? `Chi đoàn: ${getUnitById(m.unit_id)?.name || 'Cơ sở'}` : 'Đoàn viên';
-    }
+      if (formRecipientKind === 'unit') {
+        const u = units.find(item => item.id === formSelectedUnitId);
+        recipientName = u ? u.name : 'Chi đoàn cơ sở';
+        recipientSub = 'Bí thư Chi đoàn';
+      } else {
+        const m = members.find(item => item.id === formSelectedMemberId);
+        recipientName = m ? m.full_name : 'Đoàn viên';
+        recipientSub = m ? `Chi đoàn: ${getUnitById(m.unit_id)?.name || 'Cơ sở'}` : 'Đoàn viên';
+      }
 
-    const isSched = formSendMode === 'schedule';
-    const sendTime = isSched
-      ? `${formScheduleDate}T${formScheduleTime}:00`
-      : new Date().toISOString();
+      const isSched = formSendMode === 'schedule';
+      const sendTime = isSched
+        ? `${formScheduleDate}T${formScheduleTime}:00`
+        : new Date().toISOString();
 
-    // Gửi thật (chỉ khi gửi ngay; hẹn lịch chưa hỗ trợ tự động gửi)
-    if (!isSched) {
+      // Gửi thật ngay hoặc lưu lịch hẹn vào Database
       try {
-        if (formRecipientKind === 'unit') {
-          await sendManualReminder({
-            recipientType: 'unit', unitId: formSelectedUnitId,
-            title: formTitle.trim() || 'Nhắc nhở từ Đoàn xã',
-            content: formContent.trim(), level: formLevel,
-          });
+        if (!isSched) {
+          if (formRecipientKind === 'unit') {
+            await sendManualReminder({
+              recipientType: 'unit', unitId: formSelectedUnitId,
+              title: formTitle.trim() || 'Nhắc nhở từ Đoàn xã',
+              content: formContent.trim(), level: formLevel,
+            });
+          } else {
+            await sendManualReminder({
+              recipientType: 'member', memberId: formSelectedMemberId,
+              title: formTitle.trim() || 'Nhắc nhở từ Đoàn xã',
+              content: formContent.trim(), level: formLevel,
+            });
+          }
         } else {
-          await sendManualReminder({
-            recipientType: 'member', memberId: formSelectedMemberId,
+          // Lưu lịch hẹn vào CSDL
+          await createScheduledNotification({
             title: formTitle.trim() || 'Nhắc nhở từ Đoàn xã',
-            content: formContent.trim(), level: formLevel,
+            content: formContent.trim(),
+            level: formLevel,
+            recipientType: formRecipientKind,
+            targetId: formRecipientKind === 'unit' ? formSelectedUnitId : formSelectedMemberId,
+            scheduledAt: new Date(sendTime).toISOString(),
           });
         }
       } catch (err) {
-        showToast({ title: 'Không gửi được', description: err instanceof Error ? err.message : '', type: 'error' });
+        showToast({ title: 'Không thực hiện được', description: err instanceof Error ? err.message : '', type: 'error' });
         return;
       }
+
+      const newItem: CustomReminderItem = {
+        id: `custom_${Date.now()}`,
+        type: 'custom',
+        typeLabel: formTitle ? formTitle.trim() : 'Nhắc nhở tuỳ biến',
+        recipientType: formRecipientKind,
+        recipientName,
+        recipientSubtext: recipientSub,
+        content: formContent.trim(),
+        sendTime,
+        status: isSched ? 'pending' : 'sent',
+        level: formLevel,
+        isScheduled: isSched,
+      };
+
+      setReminderList(prev => [newItem, ...prev]);
+      setIsCreateModalOpen(false);
+      setFormTitle('');
+      setFormContent('');
+
+      showToast({
+        title: isSched ? 'Đã lên lịch nhắc nhở' : 'Đã gửi thông báo nhắc nhở',
+        description: isSched
+          ? `Lưu lịch gửi ${formScheduleTime} ngày ${formatDateVN(formScheduleDate)} (tự động gửi sẽ bổ sung sau).`
+          : `Đã gửi trực tiếp tới ${recipientName}.`,
+        type: 'success',
+      });
+    } finally {
+      setIsSendingCustom(false);
     }
-
-    const newItem: CustomReminderItem = {
-      id: `custom_${Date.now()}`,
-      type: 'custom',
-      typeLabel: formTitle ? formTitle.trim() : 'Nhắc nhở tuỳ biến',
-      recipientType: formRecipientKind,
-      recipientName,
-      recipientSubtext: recipientSub,
-      content: formContent.trim(),
-      sendTime,
-      status: isSched ? 'pending' : 'sent',
-      level: formLevel,
-      isScheduled: isSched,
-    };
-
-    setReminderList(prev => [newItem, ...prev]);
-    setIsCreateModalOpen(false);
-    setFormTitle('');
-    setFormContent('');
-
-    showToast({
-      title: isSched ? 'Đã lên lịch nhắc nhở' : 'Đã gửi thông báo nhắc nhở',
-      description: isSched
-        ? `Lưu lịch gửi ${formScheduleTime} ngày ${formatDateVN(formScheduleDate)} (tự động gửi sẽ bổ sung sau).`
-        : `Đã gửi trực tiếp tới ${recipientName}.`,
-      type: 'success',
-    });
   };
 
   // Hủy lời nhắc đang chờ
@@ -387,7 +431,7 @@ export const RemindersPage: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-2">
-          <button
+          <button title="Tạo nhắc nhở tùy biến"
             type="button"
             onClick={() => setIsCreateModalOpen(true)}
             className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-white bg-[#1F5FBF] hover:bg-[#154690] rounded-lg shadow-xs transition-all cursor-pointer"
@@ -416,18 +460,24 @@ export const RemindersPage: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
-            <button
+            <button title="Gửi nhắc tới bí thư chi đoàn đã chọn"
               type="button"
               onClick={handleSendAllToday}
-              disabled={dueTodayReminders.length === 0}
-              className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-xs font-bold transition-all shadow-xs cursor-pointer ${
-                dueTodayReminders.length === 0
+              disabled={dueTodayReminders.length === 0 || isSendingAll}
+              className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-xs font-bold transition-all shadow-xs ${
+                dueTodayReminders.length === 0 || isSendingAll
                   ? 'bg-slate-200 text-slate-400 cursor-not-allowed'
-                  : 'bg-red-600 hover:bg-red-700 text-white animate-pulse'
+                  : 'bg-red-600 hover:bg-red-700 text-white cursor-pointer animate-pulse'
               }`}
             >
-              <Send className="w-4 h-4" />
-              Gửi tất cả hôm nay ({totalDueTodayRecipients} Chi đoàn)
+              {isSendingAll ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Send className="w-4 h-4" />
+              )}
+              {isSendingAll
+                ? 'Đang gửi…'
+                : `Gửi tất cả hôm nay (${totalDueTodayRecipients} Chi đoàn)`}
             </button>
           </div>
         </div>
@@ -496,7 +546,7 @@ export const RemindersPage: React.FC = () => {
           <div className="flex flex-wrap items-center gap-2">
             {/* Bộ lọc trạng thái */}
             <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-lg text-xs font-semibold">
-              <button
+              <button title="Tất cả"
                 type="button"
                 onClick={() => setStatusFilter('all')}
                 className={`px-2.5 py-1 rounded-md transition-all cursor-pointer ${
@@ -505,7 +555,7 @@ export const RemindersPage: React.FC = () => {
               >
                 Tất cả
               </button>
-              <button
+              <button title="Đã gửi"
                 type="button"
                 onClick={() => setStatusFilter('sent')}
                 className={`px-2.5 py-1 rounded-md transition-all cursor-pointer ${
@@ -514,7 +564,7 @@ export const RemindersPage: React.FC = () => {
               >
                 Đã gửi
               </button>
-              <button
+              <button title="Đang chờ"
                 type="button"
                 onClick={() => setStatusFilter('pending')}
                 className={`px-2.5 py-1 rounded-md transition-all cursor-pointer ${
@@ -523,7 +573,7 @@ export const RemindersPage: React.FC = () => {
               >
                 Đang chờ
               </button>
-              <button
+              <button title="Đã hủy"
                 type="button"
                 onClick={() => setStatusFilter('cancelled')}
                 className={`px-2.5 py-1 rounded-md transition-all cursor-pointer ${
@@ -623,21 +673,25 @@ export const RemindersPage: React.FC = () => {
                     </td>
 
                     <td className="p-3 text-right whitespace-nowrap">
-                      {item.status === 'pending' && (
+                      <div className="flex items-center justify-end gap-1.5">
                         <button
                           type="button"
-                          onClick={() => handleCancelReminder(item.id)}
-                          className="px-2.5 py-1 text-xs font-semibold text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
+                          onClick={() => setSelectedReminderDetail(item)}
+                          className="px-2 py-1 text-xs font-semibold text-[#1F5FBF] hover:bg-blue-50 rounded-md transition-colors flex items-center gap-1"
+                          title="Xem chi tiết nội dung"
                         >
-                          Hủy lịch
+                          <Eye className="w-3.5 h-3.5" /> Xem
                         </button>
-                      )}
-                      {item.status === 'sent' && (
-                        <span className="text-slate-400 text-xs">Đã ghi nhận</span>
-                      )}
-                      {item.status === 'cancelled' && (
-                        <span className="text-slate-400 text-xs">—</span>
-                      )}
+                        {item.status === 'pending' && (
+                          <button title="Hủy lịch"
+                            type="button"
+                            onClick={() => handleCancelReminder(item.id)}
+                            className="px-2.5 py-1 text-xs font-semibold text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
+                          >
+                            Hủy lịch
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))
@@ -656,7 +710,7 @@ export const RemindersPage: React.FC = () => {
                 <Send className="w-4 h-4 text-[#1F5FBF]" />
                 Tạo Nhắc nhở Tùy biến
               </h3>
-              <button
+              <button title="Đóng"
                 type="button"
                 onClick={() => setIsCreateModalOpen(false)}
                 className="p-1 text-slate-400 hover:text-slate-700 rounded-lg cursor-pointer"
@@ -670,7 +724,7 @@ export const RemindersPage: React.FC = () => {
               <div>
                 <label className="font-bold text-slate-800 block mb-1.5">Đối tượng nhận thông báo:</label>
                 <div className="grid grid-cols-2 gap-2">
-                  <button
+                  <button title="Chi đoàn cơ sở"
                     type="button"
                     onClick={() => setFormRecipientKind('unit')}
                     className={`p-2.5 rounded-lg border text-xs font-bold flex items-center justify-center gap-2 cursor-pointer transition-all ${
@@ -681,7 +735,7 @@ export const RemindersPage: React.FC = () => {
                   >
                     <Building2 className="w-4 h-4" /> Chi đoàn cơ sở
                   </button>
-                  <button
+                  <button title="Cá nhân (Đoàn viên)"
                     type="button"
                     onClick={() => setFormRecipientKind('member')}
                     className={`p-2.5 rounded-lg border text-xs font-bold flex items-center justify-center gap-2 cursor-pointer transition-all ${
@@ -706,25 +760,69 @@ export const RemindersPage: React.FC = () => {
                   >
                     {units.map(u => (
                       <option key={u.id} value={u.id}>
-                        {u.name} ({u.union_member_count} đoàn viên)
+                        {u.name} ({activeMemberCountByUnit.get(u.id) || 0} đoàn viên)
                       </option>
                     ))}
                   </select>
                 </div>
               ) : (
-                <div>
-                  <label className="font-bold text-slate-700 block mb-1">Chọn Đoàn viên cụ thể:</label>
-                  <select
-                    value={formSelectedMemberId}
-                    onChange={e => setFormSelectedMemberId(e.target.value)}
-                    className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-lg text-xs font-medium text-slate-900"
-                  >
-                    {members.slice(0, 50).map(m => (
-                      <option key={m.id} value={m.id}>
-                        {m.full_name} – {m.phone} ({getUnitById(m.unit_id)?.name})
-                      </option>
-                    ))}
-                  </select>
+                <div className="space-y-1.5 relative">
+                  <label className="font-bold text-slate-700 block">Chọn Đoàn viên cụ thể:</label>
+
+                  {/* Thanh tìm kiếm đoàn viên */}
+                  <div className="relative">
+                    <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      value={memberSearchQuery}
+                      onChange={e => {
+                        setMemberSearchQuery(e.target.value);
+                        setIsMemberDropdownOpen(true);
+                      }}
+                      onFocus={() => setIsMemberDropdownOpen(true)}
+                      placeholder="Gõ tên, SĐT hoặc chi đoàn để tìm kiếm..."
+                      className="w-full pl-8 pr-3 py-2 bg-slate-50 border border-slate-300 rounded-lg text-xs focus:outline-none focus:border-[#1F5FBF]"
+                    />
+                  </div>
+
+                  {/* Dropdown danh sách kết quả */}
+                  <div className="border border-slate-200 rounded-lg max-h-48 overflow-y-auto divide-y divide-slate-100 bg-white">
+                    {filteredCandidates.length === 0 ? (
+                      <p className="p-3 text-center text-slate-400 text-[11px]">Không tìm thấy đoàn viên phù hợp</p>
+                    ) : (
+                      filteredCandidates.map(m => {
+                        const isSelected = formSelectedMemberId === m.id;
+                        return (
+                          <div
+                            key={m.id}
+                            onClick={() => {
+                              setFormSelectedMemberId(m.id);
+                              setMemberSearchQuery(`${m.full_name} (${getUnitById(m.unit_id)?.name})`);
+                              setIsMemberDropdownOpen(false);
+                            }}
+                            className={`p-2.5 hover:bg-blue-50 cursor-pointer flex items-center justify-between transition-colors ${
+                              isSelected ? 'bg-blue-50/70 border-l-2 border-[#1F5FBF]' : ''
+                            }`}
+                          >
+                            <div className="min-w-0">
+                              <p className={`font-semibold ${isSelected ? 'text-[#1F5FBF]' : 'text-slate-800'}`}>
+                                {m.full_name}
+                              </p>
+                              <p className="text-[10px] text-slate-500">
+                                {m.phone ? `${m.phone} • ` : ''}{getUnitById(m.unit_id)?.name || 'Chi đoàn'}
+                              </p>
+                            </div>
+                            {isSelected && (
+                              <Check className="w-3.5 h-3.5 text-[#1F5FBF] shrink-0" />
+                            )}
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                  <p className="text-[10px] text-slate-400">
+                    Đã chọn: <b className="text-slate-700">{members.find(m => m.id === formSelectedMemberId)?.full_name || 'Chưa chọn'}</b>
+                  </p>
                 </div>
               )}
 
@@ -755,7 +853,7 @@ export const RemindersPage: React.FC = () => {
               <div>
                 <label className="font-bold text-slate-700 block mb-1">Mức độ cảnh báo:</label>
                 <div className="grid grid-cols-3 gap-2">
-                  <button
+                  <button title="Vàng (Bình thường)"
                     type="button"
                     onClick={() => setFormLevel('yellow')}
                     className={`p-2 rounded-lg border text-xs font-bold text-center cursor-pointer ${
@@ -766,7 +864,7 @@ export const RemindersPage: React.FC = () => {
                   >
                     Vàng (Bình thường)
                   </button>
-                  <button
+                  <button title="Cam (Quan trọng)"
                     type="button"
                     onClick={() => setFormLevel('orange')}
                     className={`p-2 rounded-lg border text-xs font-bold text-center cursor-pointer ${
@@ -777,7 +875,7 @@ export const RemindersPage: React.FC = () => {
                   >
                     Cam (Quan trọng)
                   </button>
-                  <button
+                  <button title="Đỏ (Khẩn cấp)"
                     type="button"
                     onClick={() => setFormLevel('red')}
                     className={`p-2 rounded-lg border text-xs font-bold text-center cursor-pointer ${
@@ -842,21 +940,92 @@ export const RemindersPage: React.FC = () => {
               </div>
 
               <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
-                <button
+                <button title="Hủy"
                   type="button"
                   onClick={() => setIsCreateModalOpen(false)}
                   className="px-4 py-2 font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg cursor-pointer"
                 >
                   Hủy
                 </button>
-                <button
+                <button title="Đang xử lý"
                   type="submit"
-                  className="px-5 py-2 font-bold text-white bg-[#1F5FBF] hover:bg-[#154690] rounded-lg cursor-pointer shadow-xs"
+                  disabled={isSendingCustom}
+                  className="inline-flex items-center gap-1.5 px-5 py-2 font-bold text-white bg-[#1F5FBF] hover:bg-[#154690] rounded-lg cursor-pointer shadow-xs disabled:opacity-60 disabled:cursor-not-allowed"
                 >
-                  {formSendMode === 'schedule' ? 'Lên lịch gửi' : 'Gửi thông báo ngay'}
+                  {isSendingCustom && <Loader2 className="w-4 h-4 animate-spin" />}
+                  {isSendingCustom
+                    ? 'Đang gửi…'
+                    : formSendMode === 'schedule'
+                    ? 'Lên lịch gửi'
+                    : 'Gửi thông báo ngay'}
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: XEM CHI TIẾT THÔNG BÁO LỜI NHẮC */}
+      {selectedReminderDetail && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 animate-in fade-in">
+          <div className="bg-white rounded-2xl max-w-lg w-full p-5 space-y-4 shadow-2xl border border-slate-200 text-xs">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <span
+                  className={`w-3 h-3 rounded-full ${
+                    selectedReminderDetail.level === 'red'
+                      ? 'bg-red-500 ring-4 ring-red-100'
+                      : selectedReminderDetail.level === 'orange'
+                      ? 'bg-orange-500 ring-4 ring-orange-100'
+                      : 'bg-amber-500 ring-4 ring-amber-100'
+                  }`}
+                />
+                <h3 className="text-sm font-bold text-slate-900">Chi tiết lời nhắc / thông báo</h3>
+              </div>
+              <button title="Đóng"
+                type="button"
+                onClick={() => setSelectedReminderDetail(null)}
+                className="p-1 rounded-full text-slate-400 hover:text-slate-600 hover:bg-slate-100"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <div className="p-3 bg-slate-50 rounded-xl border border-slate-200/80 space-y-1">
+                <div className="flex items-center justify-between text-[11px]">
+                  <span className="text-slate-400 font-medium">Đối tượng nhận:</span>
+                  <span className="font-bold text-slate-900">{selectedReminderDetail.recipientName}</span>
+                </div>
+                {selectedReminderDetail.recipientSubtext && (
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="text-slate-400 font-medium">Đơn vị:</span>
+                    <span className="text-slate-600">{selectedReminderDetail.recipientSubtext}</span>
+                  </div>
+                )}
+                <div className="flex items-center justify-between text-[11px] pt-1 border-t border-slate-200/60">
+                  <span className="text-slate-400 font-medium">Thời điểm gửi:</span>
+                  <span className="font-mono text-slate-700">{formatDateTimeVN(selectedReminderDetail.sendTime)}</span>
+                </div>
+              </div>
+
+              <div>
+                <span className="text-[11px] font-bold text-slate-700 block mb-1">Nội dung chi tiết:</span>
+                <div className="p-3.5 bg-blue-50/40 border border-blue-200/80 rounded-xl text-slate-800 leading-relaxed whitespace-pre-wrap font-medium">
+                  {selectedReminderDetail.content}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex justify-end pt-2 border-t border-slate-100">
+              <button title="Đóng"
+                type="button"
+                onClick={() => setSelectedReminderDetail(null)}
+                className="px-4 py-2 font-bold text-white bg-[#1F5FBF] hover:bg-[#154690] rounded-lg shadow-xs"
+              >
+                Đóng
+              </button>
+            </div>
           </div>
         </div>
       )}

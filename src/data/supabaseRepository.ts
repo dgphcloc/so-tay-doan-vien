@@ -24,8 +24,17 @@ import type {
   DbTask, DbTaskUnit, DbTaskRegistration, DbTaskSubCriterion, DbTaskResult, DbMemberSubmission, DbEvidence, DbNotification,
   DbWarning, TaskStatus, TaskDeadlineStatus, EvidenceType, EvidenceSource, NotificationType, NotificationLevel,
   EvidenceAuditWarning, UnitScoreCalculation,
+  DbEvaluationPeriod, DbMemberRldvLevel, DbMemberDiscipline, DbMemberEvaluation, DbUnitEvaluation,
+  DbUnionFeeSettings, DbUnionFeePayment, DbUnitFeeDistribution, FeePaymentMethod, FeePaymentStatus,
+  DbScheduledNotification,
+  PeriodType, PeriodStatus, RatingLevel, DisciplineForm, MemberEvaluationStatus,
+  CheckinResult, CoordSource, DbUnitReport,
 } from './types';
 import { isSubCriterionApplicableToUnit } from '../utils/criteriaAssignment';
+import { reportSnapshotError } from './snapshotError';
+import {
+  computeMemberRating, computeUnitRating, percent, hasStrictDisciplineInPeriod,
+} from '../utils/evaluationRules';
 
 // ---------------------------------------------------------------------
 // Tiện ích
@@ -101,6 +110,178 @@ export async function fetchAll<T = Row>(make: (from: number, to: number) => Prom
 }
 
 // ---------------------------------------------------------------------
+// Bộ chuyển đổi dòng CSDL -> kiểu của giao diện (đánh giá hằng năm)
+// ---------------------------------------------------------------------
+export function toEvaluationPeriod(r: Row): DbEvaluationPeriod {
+  return {
+    id: String(r.id),
+    year: Number(r.year),
+    name: r.name,
+    period_type: r.period_type as PeriodType,
+    start_date: String(r.start_date ?? '').slice(0, 10),
+    end_date: String(r.end_date ?? '').slice(0, 10),
+    status: r.status as PeriodStatus,
+    note: r.note ?? undefined,
+    created_at: r.created_at,
+    updated_at: r.updated_at,
+  };
+}
+
+export function toMemberRldvLevel(r: Row): DbMemberRldvLevel {
+  return {
+    id: String(r.id),
+    member_id: str(r.member_id),
+    year: Number(r.year),
+    level: r.level as RatingLevel,
+    note: r.note ?? undefined,
+    evaluated_at: r.evaluated_at ?? null,
+    evaluated_by: r.evaluated_by === null || r.evaluated_by === undefined ? null : String(r.evaluated_by),
+  };
+}
+
+export function toMemberDiscipline(r: Row): DbMemberDiscipline {
+  return {
+    id: String(r.id),
+    member_id: str(r.member_id),
+    decision_no: str(r.decision_no),
+    form: r.form as DisciplineForm,
+    decided_at: String(r.decided_at ?? '').slice(0, 10),
+    effective_from: r.effective_from ? String(r.effective_from).slice(0, 10) : null,
+    effective_to: r.effective_to ? String(r.effective_to).slice(0, 10) : null,
+    reason: r.reason ?? undefined,
+    created_by: r.created_by === null || r.created_by === undefined ? null : String(r.created_by),
+    created_at: r.created_at,
+  };
+}
+
+export function toMemberEvaluation(r: Row): DbMemberEvaluation {
+  return {
+    id: String(r.id),
+    period_id: str(r.period_id),
+    member_id: str(r.member_id),
+    unit_id: str(r.unit_id),
+    total_tasks: Number(r.total_tasks ?? 0),
+    completed_tasks: Number(r.completed_tasks ?? 0),
+    participation_rate: Number(r.participation_rate ?? 0),
+    is_party_member_block: !!r.is_party_member_block,
+    is_long_absent: !!r.is_long_absent,
+    auto_rating: (r.auto_rating ?? 'not_rated') as RatingLevel,
+    member_response: (r.member_response ?? null) as 'confirmed' | 'disagreed' | null,
+    member_feedback: r.member_feedback ?? undefined,
+    member_responded_at: r.member_responded_at ?? null,
+    secretary_rating: (r.secretary_rating ?? null) as RatingLevel | null,
+    secretary_note: r.secretary_note ?? undefined,
+    secretary_id: r.secretary_id === null || r.secretary_id === undefined ? null : String(r.secretary_id),
+    secretary_at: r.secretary_at ?? null,
+    admin_rating: (r.admin_rating ?? null) as RatingLevel | null,
+    admin_note: r.admin_note ?? undefined,
+    admin_id: r.admin_id === null || r.admin_id === undefined ? null : String(r.admin_id),
+    admin_at: r.admin_at ?? null,
+    status: (r.status ?? 'auto') as MemberEvaluationStatus,
+    created_at: r.created_at,
+    updated_at: r.updated_at,
+  };
+}
+
+export function toUnitEvaluation(r: Row): DbUnitEvaluation {
+  return {
+    id: String(r.id),
+    period_id: str(r.period_id),
+    unit_id: str(r.unit_id),
+    task_completion_rate: Number(r.task_completion_rate ?? 0),
+    member_good_rate: Number(r.member_good_rate ?? 0),
+    member_fail_count: Number(r.member_fail_count ?? 0),
+    member_total: Number(r.member_total ?? 0),
+    digital_rate: Number(r.digital_rate ?? 0),
+    meeting_ok: !!r.meeting_ok,
+    fee_ok: !!r.fee_ok,
+    has_discipline: !!r.has_discipline,
+    auto_rating: (r.auto_rating ?? 'not_rated') as RatingLevel,
+    final_rating: (r.final_rating ?? null) as RatingLevel | null,
+    note: r.note ?? undefined,
+    rated_by: r.rated_by === null || r.rated_by === undefined ? null : String(r.rated_by),
+    rated_at: r.rated_at ?? null,
+    status: (r.status ?? 'auto') as 'auto' | 'finalized',
+    created_at: r.created_at,
+    updated_at: r.updated_at,
+  };
+}
+
+export function toUnionFeeSettings(r: Row): DbUnionFeeSettings {
+  return {
+    id: Number(r.id ?? 1),
+    bank_name: str(r.bank_name || 'MB Bank'),
+    bank_code: str(r.bank_code || '970422'),
+    account_number: str(r.account_number || '0585682707'),
+    account_holder: str(r.account_holder || 'DUONG PHUOC LOC'),
+    auto_remind_day: Number(r.auto_remind_day ?? 5),
+    fee_non_salary: Number(r.fee_non_salary ?? 2000),
+    fee_has_salary: Number(r.fee_has_salary ?? 5000),
+    payos_client_id: str(r.payos_client_id || '8ee9d939-9f65-4c50-a6bd-d0268ce14dfd'),
+    payos_api_key: str(r.payos_api_key || '4e07a201-0bab-43ad-89aa-d2bcf6ca9e96'),
+    payos_checksum_key: str(r.payos_checksum_key || '5e51534bea3712dc6d4fc59e44418e3172d2a5369675e846c2ced044b2d41363'),
+    payos_active: r.payos_active ?? true,
+    updated_by: r.updated_by ? String(r.updated_by) : null,
+    updated_at: r.updated_at || new Date().toISOString(),
+  };
+}
+
+export function toUnionFeePayment(r: Row): DbUnionFeePayment {
+  return {
+    id: String(r.id),
+    member_id: str(r.member_id),
+    unit_id: str(r.unit_id),
+    year: Number(r.year),
+    months: Array.isArray(r.months) ? r.months.map(Number) : [],
+    amount: Number(r.amount ?? 0),
+    payment_method: (r.payment_method || 'payos') as FeePaymentMethod,
+    status: (r.status || 'pending') as FeePaymentStatus,
+    order_code: r.order_code ? Number(r.order_code) : null,
+    evidence_url: r.evidence_url ?? undefined,
+    note: r.note ?? undefined,
+    reviewed_by: r.reviewed_by ? String(r.reviewed_by) : null,
+    reviewed_at: r.reviewed_at ?? null,
+    created_at: r.created_at,
+    updated_at: r.updated_at,
+  };
+}
+
+export function toUnitFeeDistribution(r: Row): DbUnitFeeDistribution {
+  return {
+    id: String(r.id),
+    unit_id: str(r.unit_id),
+    year: Number(r.year),
+    period_label: str(r.period_label || 'Cả năm'),
+    total_collected: Number(r.total_collected ?? 0),
+    unit_share: Number(r.unit_share ?? 0),
+    commune_share: Number(r.commune_share ?? 0),
+    is_refunded: !!r.is_refunded,
+    refunded_at: r.refunded_at ?? null,
+    refunded_by: r.refunded_by ? String(r.refunded_by) : null,
+    receipt_no: r.receipt_no ?? undefined,
+    note: r.note ?? undefined,
+    created_at: r.created_at,
+    updated_at: r.updated_at,
+  };
+}
+
+export function toScheduledNotification(r: Row): DbScheduledNotification {
+  return {
+    id: String(r.id),
+    title: str(r.title),
+    content: str(r.content),
+    level: (r.level || 'yellow') as 'yellow' | 'orange' | 'red',
+    recipient_type: (r.recipient_type || 'all') as 'unit' | 'member' | 'all',
+    target_id: r.target_id ? String(r.target_id) : null,
+    scheduled_at: r.scheduled_at,
+    is_sent: !!r.is_sent,
+    sent_at: r.sent_at ?? null,
+    created_by: r.created_by ? String(r.created_by) : null,
+    created_at: r.created_at,
+  };
+}
+
+// ---------------------------------------------------------------------
 // Bộ chuyển đổi dòng CSDL -> kiểu của giao diện
 // ---------------------------------------------------------------------
 function toUnit(r: Row): DbUnit {
@@ -119,14 +300,23 @@ function toMember(r: Row): DbMember {
     education_grade: str(r.education_grade), specialization: r.specialization ?? undefined,
     political_theory_level: (r.political_theory_level ?? 'elementary') as PoliticalTheoryLevel,
     is_active: r.is_active, religion: str(r.religion), is_party_member: r.is_party_member ?? false,
+    is_elite_member: !!r.is_elite_member,
+    elite_date: r.elite_date ? String(r.elite_date) : undefined,
+    party_target_status: r.party_target_status ?? (r.is_party_member ? 'admitted' : 'none'),
     ethnicity_id: str(r.ethnicity_id), avatar_url: str(r.avatar_url), current_job: str(r.current_job),
     central_member_code: str(r.central_member_code), note: r.note ?? undefined,
+    has_salary: !!r.has_salary,
+    exempt_months: Array.isArray(r.exempt_months) ? r.exempt_months.map(Number) : [],
+    transferred_out_month: r.transferred_out_month ? Number(r.transferred_out_month) : null,
+    approval_status: (r.approval_status || 'approved') as 'pending' | 'approved' | 'rejected',
+    is_newly_admitted: !!r.is_newly_admitted,
+    rejection_reason: r.rejection_reason ?? undefined,
   };
 }
 
-function toCommittee(r: Row): DbUnitCommittee {
+export function toCommittee(r: Row): DbUnitCommittee {
   return {
-    id: String(r.id), unit_id: r.unit_id === null ? null : String(r.unit_id), member_id: String(r.member_id),
+    id: String(r.id), unit_id: r.unit_id === null || r.unit_id === undefined ? null : String(r.unit_id), member_id: String(r.member_id),
     position: r.position as CommitteePosition, is_standing: r.is_standing, term_start: r.term_start, term_end: r.term_end,
   };
 }
@@ -213,6 +403,10 @@ export function toTask(r: Row): DbTask {
     closed_by: r.closed_by === null || r.closed_by === undefined ? null : String(r.closed_by),
     closed_at: r.closed_at ?? null,
     submit_scope: r.submit_scope === 'open' ? 'open' : 'assigned',
+    source_sub_criterion_id: r.source_sub_criterion_id ? String(r.source_sub_criterion_id) : null,
+    radius_m: numOrNull(r.radius_m),
+    attendance_open_at: r.attendance_open_at ? String(r.attendance_open_at) : null,
+    attendance_close_at: r.attendance_close_at ? String(r.attendance_close_at) : null,
   };
 }
 
@@ -247,6 +441,8 @@ export function toTaskResult(r: Row): DbTaskResult {
     reviewed_by: r.reviewed_by === null ? null : String(r.reviewed_by),
     reviewed_at: r.reviewed_at,
     review_note: r.review_note ?? undefined,
+    admin_reviewed_by: r.admin_reviewed_by === null || r.admin_reviewed_by === undefined ? null : String(r.admin_reviewed_by),
+    admin_reviewed_at: r.admin_reviewed_at ?? null,
   };
 }
 
@@ -256,6 +452,29 @@ export function toMemberSubmission(r: Row): DbMemberSubmission {
     note: r.note ?? undefined,
     lat: r.lat === null || r.lat === undefined ? null : Number(r.lat),
     lng: r.lng === null || r.lng === undefined ? null : Number(r.lng),
+    status: r.status as ReviewStatus,
+    submitted_at: r.submitted_at ? String(r.submitted_at) : '',
+    reviewed_by: r.reviewed_by === null || r.reviewed_by === undefined ? null : String(r.reviewed_by),
+    reviewed_at: r.reviewed_at ?? null,
+    review_note: r.review_note ?? undefined,
+    accuracy_m: numOrNull(r.accuracy_m),
+    distance_m: numOrNull(r.distance_m),
+    radius_applied_m: numOrNull(r.radius_applied_m),
+    checkin_result: (r.checkin_result ?? null) as CheckinResult | null,
+    coord_source: (r.coord_source ?? null) as CoordSource | null,
+    closest_evidence_id: r.closest_evidence_id === null || r.closest_evidence_id === undefined
+      ? null : String(r.closest_evidence_id),
+    submitted_outside_window: !!r.submitted_outside_window,
+  };
+}
+
+export function toUnitReport(r: Row): DbUnitReport {
+  return {
+    id: String(r.id),
+    task_id: String(r.task_id),
+    unit_id: String(r.unit_id),
+    submitted_by: String(r.submitted_by),
+    note: r.note ?? undefined,
     status: r.status as ReviewStatus,
     submitted_at: r.submitted_at ? String(r.submitted_at) : '',
     reviewed_by: r.reviewed_by === null || r.reviewed_by === undefined ? null : String(r.reviewed_by),
@@ -279,6 +498,8 @@ export function toEvidence(r: Row): DbEvidence {
     lng: r.lng === null || r.lng === undefined ? null : Number(r.lng),
     source: r.source as EvidenceSource,
     file_hash: r.file_hash ?? '', is_locked: !!r.is_locked,
+    accuracy_m: numOrNull(r.accuracy_m),
+    coord_source: (r.coord_source ?? null) as CoordSource | null,
   };
 }
 
@@ -333,8 +554,8 @@ type Gd1Keys =
   | 'submitMemberResult' | 'listMemberSubmissions' | 'reviewMemberSubmission'
   | 'listMemberSubmissionEvidences' | 'listTaskParticipants' | 'listTaskParticipantsAll'
   | 'getDashboard' | 'listUnits' | 'getUnit' | 'saveUnit' | 'deactivateUnit' | 'createUnit' | 'deleteUnit'
-  | 'listMembers' | 'getMember' | 'saveMember' | 'deleteMember' | 'importMembers'
-  | 'listCommittees' | 'addCommitteeMember' | 'endCommitteeTerm'
+  | 'listMembers' | 'getMember' | 'saveMember' | 'deleteMember' | 'setMemberActive' | 'importMembers'
+  | 'listCommittees' | 'addCommitteeMember' | 'endCommitteeTerm' | 'updateCommitteeMember'
   | 'listReports' | 'createReport' | 'getYearlySettings' | 'updateYearlySettings'
   | 'listUnitTypes' | 'saveUnitType' | 'deleteUnitType' | 'listEthnicities'
   | 'listProfiles' | 'setProfileRole' | 'toggleProfileActive' | 'linkProfileMember' | 'listAuditLogs'
@@ -345,10 +566,33 @@ type Gd1Keys =
   // Giai đoạn 2 — nhiệm vụ / duyệt / nhắc nhở / điểm
   | 'listTasks' | 'getTask' | 'createTask' | 'publishTask' | 'closeTask' | 'deleteTask' | 'cloneTask'
   | 'remindUnit' | 'remindAllUnsubmitted' | 'setTaskSubCriteria' | 'countUnitsWithoutResult'
-  | 'approveAllMemberSubmissions'
+  | 'approveAllMemberSubmissions' | 'bulkApproveTaskResults'
+  | 'getUnitCriterionProgress' | 'listTasksBySubCriterion'
   | 'listPendingReviews' | 'getReviewDetail' | 'approve' | 'reject'
   | 'listWarnings' | 'resolveWarning' | 'sendNotification' | 'syncWarnings'
-  | 'calculateUnitScores';
+  | 'listMyNotifications' | 'listAllNotifications' | 'markNotificationAsRead' | 'markAllNotificationsAsRead'
+  | 'calculateUnitScores'
+  // Giai đoạn 8 — đánh giá hằng năm
+  | 'listEvaluationPeriods' | 'saveEvaluationPeriod' | 'setEvaluationPeriodStatus'
+  | 'listMemberRldvLevels' | 'saveMemberRldvLevel'
+  | 'listMemberDisciplines' | 'saveMemberDiscipline' | 'deleteMemberDiscipline'
+  | 'listMemberEvaluations' | 'generateMemberEvaluations'
+  | 'saveMemberEvaluationResponse' | 'reviewMemberEvaluation' | 'finalizeMemberEvaluation'
+  | 'listUnitEvaluations' | 'generateUnitEvaluations' | 'finalizeUnitEvaluation'
+  // Giai đoạn 9 — Đoàn phí (Hướng dẫn 39)
+  | 'getUnionFeeSettings' | 'updateUnionFeeSettings'
+  | 'listUnionFeePayments' | 'createUnionFeePayment' | 'reviewUnionFeePayment'
+  | 'confirmPayOsPayment' | 'updateMemberFeeStatus'
+  | 'createPayOsPaymentLink' | 'checkPayOsPaymentStatus'
+  | 'listUnitFeeDistributions' | 'generateUnitFeeDistributions' | 'markFeeDistributionRefunded'
+  | 'sendUnionFeeReminder'
+  // Giai đoạn 10 — Lên lịch thông báo, duyệt đăng ký, chỉ tiêu đoàn viên mới, khôi phục gốc
+  | 'updateTask'
+  | 'listScheduledNotifications' | 'createScheduledNotification' | 'deleteScheduledNotification' | 'dispatchScheduledNotifications'
+  | 'reviewMemberRegistration' | 'toggleMemberNewlyAdmitted'
+  | 'resetFactoryData'
+  // Tạo tài khoản đăng nhập (gọi Edge Function, cần service_role ở server)
+  | 'createMemberAccount' | 'bulkCreateMemberAccounts';
 
 export class SupabaseGd1Repository implements Pick<Repository, Gd1Keys> {
   private roleNameById: Map<number, RoleId> | null = null;
@@ -531,6 +775,17 @@ export class SupabaseGd1Repository implements Pick<Repository, Gd1Keys> {
     const r = (data ?? {}) as Row;
     if (!r.success) return { success: false, message: r.message ?? 'Không tạo được hồ sơ' };
     this.clearCache();
+
+    // Đánh dấu pending và thông báo Bí thư chi đoàn
+    if (r.member_id) {
+      await this.supabase.from('members').update({ approval_status: 'pending' }).eq('id', r.member_id);
+      await this.supabase.rpc('notify_secretary_new_registration', {
+        p_member_id: Number(r.member_id),
+        p_unit_id: Number(input.unit_id),
+        p_full_name: input.full_name,
+      });
+    }
+
     return { success: true, memberId: r.member_id === undefined ? undefined : String(r.member_id) };
   }
 
@@ -542,9 +797,20 @@ export class SupabaseGd1Repository implements Pick<Repository, Gd1Keys> {
     const { data: auth } = await this.supabase.auth.getUser();
     let value: CurrentUser | null = null;
     if (auth.user) {
+      // maybeSingle() để tránh ném lỗi khi profile chưa được tạo (đăng ký Google
+      // lần đầu). Nhưng lỗi mạng / RLS cũng trả data = null — hai trường hợp này
+      // khác nhau: không có profile thì SignupPage lo, lỗi đọc thì phải báo.
       const { data, error } = await this.supabase
         .from('profiles').select('id, member_id, is_active, role:roles(name)').eq('id', auth.user.id).maybeSingle();
-      if (error) fail(error);
+      if (error) {
+        // Không ném lỗi ra ngoài: phiên vẫn còn, nhưng không đọc được quyền.
+        // Ghi log để banner cảnh báo bắt được, và trả null để UI coi như chưa
+        // xác định được người dùng thay vì lặng lẽ hiện giao diện mẫu.
+        console.error('[auth] Không đọc được profiles cho phiên hiện tại:', error);
+        reportSnapshotError(`Không đọc được hồ sơ tài khoản: ${error.message}`);
+        this.currentUserCache = { at: now, value: null };
+        return null;
+      }
       if (data) {
         const role = (Array.isArray((data as Row).role) ? (data as Row).role[0] : (data as Row).role) as Row | null;
         value = {
@@ -872,6 +1138,9 @@ export class SupabaseGd1Repository implements Pick<Repository, Gd1Keys> {
     if (input.current_job !== undefined) set('current_job', emptyToNull(input.current_job));
     if (input.central_member_code !== undefined) set('central_member_code', emptyToNull(input.central_member_code));
     if (input.note !== undefined) set('note', emptyToNull(input.note));
+    if (input.is_elite_member !== undefined) set('is_elite_member', input.is_elite_member);
+    if (input.elite_date !== undefined) set('elite_date', emptyToNull(input.elite_date));
+    if (input.party_target_status !== undefined) set('party_target_status', input.party_target_status);
     if (canEditSensitive) {
       if (input.phone !== undefined) set('phone', emptyToNull(input.phone));
       if (input.religion !== undefined) set('religion', emptyToNull(input.religion));
@@ -897,6 +1166,13 @@ export class SupabaseGd1Repository implements Pick<Repository, Gd1Keys> {
       if (error) return { success: false, message: friendlyError(error), code: error.code === '42501' ? 'FORBIDDEN' : 'INVALID' };
       const r = data as Row;
       if (!r.success) return { success: false, message: r.message, code: 'INVALID' };
+
+      // Trạng thái hoạt động đi qua RPC riêng (member_set_active)
+      if (input.is_active !== undefined) {
+        const act = await this.setMemberActive(input.id, input.is_active);
+        if (!act.success) return { success: false, message: act.message, code: 'INVALID' };
+      }
+
       const fresh = await this.getMember(input.id);
       return { success: true, member: fresh.member ?? undefined };
     }
@@ -924,10 +1200,28 @@ export class SupabaseGd1Repository implements Pick<Repository, Gd1Keys> {
   }
 
   /** Xóa hẳn chỉ làm được khi đoàn viên chưa phát sinh dữ liệu; thường nên dùng setMemberActive(false) */
-  async deleteMember(id: string): Promise<{ success: boolean }> {
+  async deleteMember(id: string): Promise<{ success: boolean; message?: string }> {
     const { data, error } = await this.supabase.from('members').delete().eq('id', Number(id)).select('id');
-    if (error) fail(error);
-    return { success: (data ?? []).length > 0 };
+    if (error) {
+      // 23503: vi phạm khóa ngoại — đoàn viên đã có dữ liệu liên quan
+      if (error.code === '23503') {
+        return {
+          success: false,
+          message: 'Đoàn viên đã phát sinh dữ liệu (nhiệm vụ, bài nộp, minh chứng, đoàn phí...). Hãy chuyển sang trạng thái "Ngừng hoạt động" thay vì xóa.',
+        };
+      }
+      if (error.code === '42501') {
+        return { success: false, message: 'Bạn không có quyền xóa đoàn viên này.' };
+      }
+      return { success: false, message: friendlyError(error) };
+    }
+    if ((data ?? []).length === 0) {
+      return {
+        success: false,
+        message: 'Không xóa được. Có thể do chính sách bảo vệ dữ liệu (RLS) hoặc đoàn viên không còn tồn tại.',
+      };
+    }
+    return { success: true };
   }
 
   /** Nhập thật. Muốn xem trước (không ghi) dùng previewImportMembers. */
@@ -991,6 +1285,27 @@ export class SupabaseGd1Repository implements Pick<Repository, Gd1Keys> {
     return { success: true };
   }
 
+  async updateCommitteeMember(input: {
+    committeeId: string; position: CommitteePosition; isStanding: boolean;
+  }): Promise<{ success: boolean; message?: string }> {
+    // Bí thư / Phó bí thư luôn thuộc Ban Thường vụ
+    const standing = input.position === 'secretary' || input.position === 'deputy_secretary'
+      ? true
+      : input.isStanding;
+
+    const { error } = await this.supabase.from('unit_committees')
+      .update({ position: input.position, is_standing: standing })
+      .eq('id', Number(input.committeeId));
+
+    if (error) {
+      if (error.code === '23505' && /one_active_(commune_)?secretary/.test(error.message)) {
+        return { success: false, message: 'Chi đoàn này đã có Bí thư đang giữ chức. Hãy kết thúc nhiệm kỳ của Bí thư hiện tại trước khi bổ nhiệm người khác.' };
+      }
+      return { success: false, message: friendlyError(error) };
+    }
+    return { success: true };
+  }
+
   async endCommitteeTerm(id: string, endDate?: string): Promise<{ success: boolean; message?: string }> {
     const { data, error } = await this.supabase.from('unit_committees')
       .update({ term_end: endDate ?? todayVN() }).eq('id', Number(id)).is('term_end', null).select('id');
@@ -1033,6 +1348,7 @@ export class SupabaseGd1Repository implements Pick<Repository, Gd1Keys> {
       const empty: DbYearlySettings = {
         year, criteria_set_id: '', matured_age: 30, new_member_target: 0,
         max_photos: 3, max_files: 3, max_links: 5, require_gps: true,
+        default_radius_m: 100, max_accuracy_m: 100,
       };
       this.yearlySettingsCache = empty;
       return empty;
@@ -1042,6 +1358,8 @@ export class SupabaseGd1Repository implements Pick<Repository, Gd1Keys> {
       new_member_target: data.new_member_target ?? 0,
       max_photos: data.max_photos ?? 3, max_files: data.max_files ?? 3,
       max_links: data.max_links ?? 5, require_gps: data.require_gps ?? true,
+      default_radius_m: numOrNull(data.default_radius_m) ?? 100,
+      max_accuracy_m: numOrNull(data.max_accuracy_m) ?? 100,
     };
     this.yearlySettingsCache = result;
     return result;
@@ -1056,6 +1374,8 @@ export class SupabaseGd1Repository implements Pick<Repository, Gd1Keys> {
     if (updates.max_files !== undefined) payload.max_files = updates.max_files;
     if (updates.max_links !== undefined) payload.max_links = updates.max_links;
     if (updates.require_gps !== undefined) payload.require_gps = updates.require_gps;
+    if (updates.default_radius_m !== undefined) payload.default_radius_m = updates.default_radius_m;
+    if (updates.max_accuracy_m !== undefined) payload.max_accuracy_m = updates.max_accuracy_m;
     const { data, error } = await this.supabase.from('yearly_settings').upsert(payload, { onConflict: 'year' }).select('year');
     if (error) fail(error);
     return { success: (data ?? []).length > 0 };
@@ -1753,11 +2073,24 @@ export class SupabaseGd1Repository implements Pick<Repository, Gd1Keys> {
         return { success: false, message: 'Bài nộp đã được duyệt, không sửa được nữa' };
       }
 
+      // Nguồn toạ độ "yếu nhất" trong các ảnh: link < manual < gps.
+      // Ghi vào lượt nộp để cán bộ thấy ngay nhãn "Không xác thực".
+      const rank = (s?: string | null) => (s === 'gps' ? 3 : s === 'manual' ? 2 : s === 'link' ? 1 : 0);
+      let weakest: 'gps' | 'manual' | 'link' | null = null;
+      for (const ev of input.evidences) {
+        const src = ev.coordSource ?? (ev.lat !== null && ev.lng !== null ? 'gps' : null);
+        if (!src) continue;
+        if (weakest === null || rank(src) < rank(weakest)) weakest = src;
+      }
+
       const payload = {
         task_id: Number(input.taskId), member_id: memberId, unit_id: unitId,
         note: emptyToNull(input.note), lat: input.lat, lng: input.lng,
         status: 'pending' as const, submitted_at: new Date().toISOString(),
         reviewed_by: null, reviewed_at: null, review_note: null,
+        // Chỉ khai báo NGUỒN. Các cột kết quả (distance_m, checkin_result, ...)
+        // do trigger trong DB tính và ghi — client gửi lên cũng bị xoá.
+        coord_source: weakest,
       };
 
       let submissionId: string;
@@ -1821,6 +2154,197 @@ export class SupabaseGd1Repository implements Pick<Repository, Gd1Keys> {
       this.supabase.from('evidences').select('*').eq('member_submission_id', Number(submissionId)).range(f, t)
     ).catch(() => [] as Row[]);
     return rows.map(toEvidence);
+  }
+
+  // -------------------------------------------------------------------
+  // Báo cáo riêng của Bí thư chi đoàn (unit_reports)
+  // Độc lập với task_results (kết quả tổng hợp của chi đoàn).
+  // -------------------------------------------------------------------
+
+  async listUnitReports(filters?: {
+    taskId?: string; unitId?: string; status?: ReviewStatus;
+  }): Promise<DbUnitReport[]> {
+    const rows = await fetchAll((f, t) => {
+      let q = this.supabase.from('unit_reports').select('*');
+      if (filters?.taskId) q = q.eq('task_id', Number(filters.taskId));
+      if (filters?.unitId) q = q.eq('unit_id', Number(filters.unitId));
+      if (filters?.status) q = q.eq('status', filters.status);
+      return q.order('submitted_at', { ascending: false }).range(f, t);
+    }).catch(() => [] as Row[]);
+    return rows.map(toUnitReport);
+  }
+
+  async submitUnitReport(input: {
+    taskId: string; note?: string; evidences: EvidenceInput[];
+  }): Promise<{ success: boolean; message?: string; reportId?: string }> {
+    try {
+      const memberId = await this.requireMemberId();
+      // Lấy chi đoàn của người nộp từ DB — không tin client gửi lên.
+      const { data: meRow, error: meErr } = await this.supabase.from('members')
+        .select('unit_id').eq('id', memberId).maybeSingle();
+      if (meErr) return { success: false, message: friendlyError(meErr) };
+      if (!meRow) return { success: false, message: 'Không tìm thấy hồ sơ đoàn viên của bạn' };
+      const unitId = Number((meRow as Row).unit_id);
+
+      // Nhiệm vụ phải tồn tại và có giao cho chi đoàn này
+      const { data: taskRow, error: taskErr } = await this.supabase.from('tasks')
+        .select('id, title').eq('id', Number(input.taskId)).maybeSingle();
+      if (taskErr) return { success: false, message: friendlyError(taskErr) };
+      if (!taskRow) return { success: false, message: 'Không tìm thấy nhiệm vụ' };
+
+      const { data: tuRow } = await this.supabase.from('task_units')
+        .select('task_id').eq('task_id', Number(input.taskId)).eq('unit_id', unitId).maybeSingle();
+      if (!tuRow) return { success: false, message: 'Nhiệm vụ này không được giao cho chi đoàn của bạn' };
+
+      const { data: existing } = await this.supabase.from('unit_reports')
+        .select('id, status').eq('task_id', Number(input.taskId)).eq('unit_id', unitId).maybeSingle();
+      if (existing && String((existing as Row).status) === 'approved') {
+        return { success: false, message: 'Báo cáo đã được duyệt, không sửa được nữa' };
+      }
+
+      const payload = {
+        task_id: Number(input.taskId), unit_id: unitId, submitted_by: memberId,
+        note: emptyToNull(input.note),
+        status: 'pending' as const, submitted_at: new Date().toISOString(),
+        reviewed_by: null, reviewed_at: null, review_note: null,
+      };
+
+      let reportId: string;
+      if (existing) {
+        const { data, error } = await this.supabase.from('unit_reports')
+          .update(payload).eq('id', Number((existing as Row).id)).select('id').single();
+        if (error) return { success: false, message: friendlyError(error) };
+        reportId = String((data as Row).id);
+        // Thay bộ minh chứng cũ bằng bộ mới
+        await this.supabase.from('evidences').delete().eq('unit_report_id', Number(reportId));
+      } else {
+        const { data, error } = await this.supabase.from('unit_reports')
+          .insert(payload).select('id').single();
+        if (error) return { success: false, message: friendlyError(error) };
+        reportId = String((data as Row).id);
+      }
+
+      await this.insertEvidences(input.evidences, {
+        unitReportId: Number(reportId), unitId, memberId,
+      });
+      return { success: true, reportId };
+    } catch (e) {
+      return { success: false, message: friendlyError(e as any) };
+    }
+  }
+
+  async reviewUnitReport(id: string, approve: boolean, note?: string): Promise<{ success: boolean; message?: string }> {
+    try {
+      const reviewer = await this.requireMemberId();
+      const { data, error } = await this.supabase.from('unit_reports').update({
+        status: approve ? 'approved' : 'rejected',
+        reviewed_by: reviewer, reviewed_at: new Date().toISOString(),
+        review_note: emptyToNull(note),
+        updated_at: new Date().toISOString(),
+      }).eq('id', Number(id)).select('id');
+      if (error) return { success: false, message: friendlyError(error) };
+      if ((data ?? []).length === 0) return { success: false, message: 'Không tìm thấy báo cáo cần duyệt' };
+      await this.writeAudit(
+        approve ? 'Duyệt báo cáo chi đoàn' : 'Từ chối báo cáo chi đoàn',
+        'unit_reports', id, { status: 'pending' }, { status: approve ? 'approved' : 'rejected' }
+      );
+      return { success: true };
+    } catch (e) {
+      return { success: false, message: friendlyError(e as any) };
+    }
+  }
+
+  async listUnitReportEvidences(reportId: string): Promise<DbEvidence[]> {
+    const rows = await fetchAll((f, t) =>
+      this.supabase.from('evidences').select('*').eq('unit_report_id', Number(reportId)).range(f, t)
+    ).catch(() => [] as Row[]);
+    return rows.map(toEvidence);
+  }
+
+  // -------------------------------------------------------------------
+  // Tạo tài khoản đăng nhập — gọi Edge Function (service_role ở server)
+  // -------------------------------------------------------------------
+
+  async createMemberAccount(input: {
+    email: string; password?: string; memberId: string; fullName: string; roleId?: string;
+  }): Promise<{ ok: boolean; email?: string; message?: string }> {
+    try {
+      const { data, error } = await this.supabase.functions.invoke('admin-create-member-account', {
+        body: {
+          action: 'single',
+          email: input.email.trim().toLowerCase(),
+          password: input.password,
+          memberId: Number(input.memberId),
+          fullName: input.fullName,
+          roleId: input.roleId || 'member',
+        },
+      });
+      if (error) {
+        const msg = await this.readFunctionError(error);
+        return { ok: false, message: msg };
+      }
+      const res = data as { ok?: boolean; email?: string; message?: string; error?: string };
+      if (res?.error) return { ok: false, message: res.error };
+      return { ok: !!res?.ok, email: res?.email, message: res?.message };
+    } catch (e) {
+      return { ok: false, message: friendlyError(e as any) };
+    }
+  }
+
+  async bulkCreateMemberAccounts(input: {
+    members: Array<{ memberId: string; fullName: string; unitId: string; unitName: string }>;
+    emailDomain: string;
+    password?: string;
+    roleId?: string;
+  }): Promise<{
+    ok: boolean; created?: number; failed?: number; skipped?: number;
+    defaultPassword?: string;
+    results?: Array<{ memberId: number; fullName: string; email: string; ok: boolean; message?: string }>;
+    message?: string;
+  }> {
+    try {
+      const { data, error } = await this.supabase.functions.invoke('admin-create-member-account', {
+        body: {
+          action: 'bulk',
+          members: input.members.map(m => ({
+            memberId: Number(m.memberId), fullName: m.fullName,
+            unitId: Number(m.unitId), unitName: m.unitName,
+          })),
+          emailDomain: input.emailDomain,
+          password: input.password,
+          roleId: input.roleId || 'member',
+        },
+      });
+      if (error) {
+        const msg = await this.readFunctionError(error);
+        return { ok: false, message: msg };
+      }
+      const res = data as Record<string, unknown>;
+      if (typeof res?.error === 'string') return { ok: false, message: res.error };
+      return {
+        ok: true,
+        created: Number(res?.created ?? 0),
+        failed: Number(res?.failed ?? 0),
+        skipped: Number(res?.skipped ?? 0),
+        defaultPassword: typeof res?.defaultPassword === 'string' ? res.defaultPassword : undefined,
+        results: Array.isArray(res?.results) ? (res.results as never) : [],
+      };
+    } catch (e) {
+      return { ok: false, message: friendlyError(e as any) };
+    }
+  }
+
+  /** Đọc thông báo lỗi thật từ Edge Function (Supabase bọc trong FunctionsHttpError). */
+  private async readFunctionError(error: unknown): Promise<string> {
+    const ctx = (error as { context?: { json?: () => Promise<unknown> } }).context;
+    if (ctx && typeof ctx.json === 'function') {
+      try {
+        const body = (await ctx.json()) as { error?: string; message?: string };
+        if (body?.error) return body.error;
+        if (body?.message) return body.message;
+      } catch { /* ignore */ }
+    }
+    return (error as { message?: string })?.message || 'Không gọi được máy chủ';
   }
 
   /** Ai đã tham gia / đã nộp / chưa nộp trong một chi đoàn cho một nhiệm vụ. */
@@ -2048,10 +2572,62 @@ export class SupabaseGd1Repository implements Pick<Repository, Gd1Keys> {
     }
   }
 
-  /** Ghi các dòng evidences cho một bài nộp (task_id XOR submission_id). */
+  /**
+   * Chặn "mỗi chi đoàn chỉ một nhiệm vụ cho mỗi tiêu chí".
+   *
+   * Quy tắc là ràng buộc XUYÊN 2 BẢNG (task_sub_criteria × task_units) nên
+   * không thể viết CHECK constraint đơn giản — phải kiểm tra bằng truy vấn.
+   * `excludeTaskId`: bỏ qua chính nhiệm vụ đang sửa (nếu không sẽ tự chặn mình).
+   *
+   * Ném lỗi có thông báo tiếng Việt để tầng gọi hiển thị trực tiếp.
+   */
+  private async assertNoDuplicateSubCriterion(
+    subCriterionIds: string[],
+    unitIds: string[],
+    excludeTaskId: string | null
+  ): Promise<void> {
+    if (subCriterionIds.length === 0 || unitIds.length === 0) return;
+
+    const subIds = subCriterionIds.map(Number).filter(n => Number.isFinite(n));
+    const uIds = unitIds.map(Number).filter(n => Number.isFinite(n));
+    if (subIds.length === 0 || uIds.length === 0) return;
+
+    // Nhiệm vụ nào đang gắn các tiêu chí này?
+    const tscRows = await fetchAll((f, t) =>
+      this.supabase.from('task_sub_criteria').select('task_id, sub_criterion_id')
+        .in('sub_criterion_id', subIds).range(f, t)
+    ).catch(() => [] as Row[]);
+
+    const taskIds = tscRows
+      .map(r => Number(r.task_id))
+      .filter(id => !excludeTaskId || id !== Number(excludeTaskId));
+    if (taskIds.length === 0) return;
+
+    // Các nhiệm vụ đó giao cho chi đoàn nào (trong số chi đoàn đang chọn)?
+    const tuRows = await fetchAll((f, t) =>
+      this.supabase.from('task_units').select('task_id, unit_id')
+        .in('task_id', taskIds).in('unit_id', uIds).range(f, t)
+    ).catch(() => [] as Row[]);
+
+    if (tuRows.length > 0) {
+      // Lấy tên chi đoàn để thông báo dễ hiểu
+      const conflictUnitIds = [...new Set(tuRows.map(r => Number(r.unit_id)))];
+      const unitRows = await this.supabase.from('units').select('id, name').in('id', conflictUnitIds);
+      const names = ((unitRows.data ?? []) as Row[]).map(u => String(u.name)).join(', ');
+      throw new Error(
+        `Mỗi chi đoàn chỉ có một nhiệm vụ cho mỗi tiêu chí. ` +
+        `Tiêu chí này đã được dùng cho: ${names || `${conflictUnitIds.length} chi đoàn`}.`
+      );
+    }
+  }
+
+  /** Ghi các dòng evidences cho một đích duy nhất (task_id XOR submission_id XOR member_submission_id XOR unit_report_id). */
   private async insertEvidences(
     evidences: EvidenceInput[],
-    target: { taskId?: number; submissionId?: number; memberSubmissionId?: number; unitId: number; memberId: number }
+    target: {
+      taskId?: number; submissionId?: number; memberSubmissionId?: number; unitReportId?: number;
+      unitId: number; memberId: number;
+    }
   ): Promise<void> {
     if (evidences.length === 0) return;
     const rows = evidences.map((e) => {
@@ -2061,6 +2637,7 @@ export class SupabaseGd1Repository implements Pick<Repository, Gd1Keys> {
         task_id: target.taskId ?? null,
         submission_id: target.submissionId ?? null,
         member_submission_id: target.memberSubmissionId ?? null,
+        unit_report_id: target.unitReportId ?? null,
         member_id: target.memberId,
         unit_id: target.unitId,
         evidence_type: e.evidenceType,
@@ -2075,6 +2652,8 @@ export class SupabaseGd1Repository implements Pick<Repository, Gd1Keys> {
         source: e.source,
         file_hash: e.fileHash,
         is_locked: false,
+        accuracy_m: e.accuracyM ?? null,
+        coord_source: e.coordSource ?? null,
       };
     });
     const { error } = await this.supabase.from('evidences').insert(rows);
@@ -2157,6 +2736,14 @@ export class SupabaseGd1Repository implements Pick<Repository, Gd1Keys> {
   }): Promise<DbTask> {
     const assignedBy = await this.requireMemberId();
     const t = input.taskData;
+
+    // Chặn trùng: mỗi chi đoàn chỉ có MỘT nhiệm vụ cho một tiêu chí.
+    // Kiểm tra ở đây (không chỉ ở UI) để không lách được qua gọi API trực tiếp.
+    await this.assertNoDuplicateSubCriterion(
+      input.subCriteriaContributions.map(c => c.sub_criterion_id),
+      input.unitIds,
+      null
+    );
     const { data, error } = await this.supabase.from('tasks').insert({
       title: t.title, content: t.content,
       due_date: t.due_date ? String(t.due_date).slice(0, 10) : null,
@@ -2167,6 +2754,10 @@ export class SupabaseGd1Repository implements Pick<Repository, Gd1Keys> {
       max_score: Number(t.max_score) || 0,
       lat: t.lat, lng: t.lng,
       submit_scope: t.submit_scope === 'open' ? 'open' : 'assigned',
+      source_sub_criterion_id: t.source_sub_criterion_id ? Number(t.source_sub_criterion_id) : null,
+      radius_m: t.radius_m ?? null,
+      attendance_open_at: t.attendance_open_at ?? null,
+      attendance_close_at: t.attendance_close_at ?? null,
     }).select('*').single();
     if (error) fail(error);
     const task = toTask(data as Row);
@@ -2232,6 +2823,18 @@ export class SupabaseGd1Repository implements Pick<Repository, Gd1Keys> {
   /** Thay toàn bộ tiêu chí đóng góp của nhiệm vụ (xóa cũ, ghi mới). */
   async setTaskSubCriteria(taskId: string, items: Array<{ sub_criterion_id: string; contribution_score: number }>): Promise<{ success: boolean; message?: string }> {
     try {
+      // Chặn trùng: bỏ qua chính nhiệm vụ đang sửa
+      if (items.length > 0) {
+        const tuRows = await fetchAll((f, t) =>
+          this.supabase.from('task_units').select('unit_id').eq('task_id', Number(taskId)).range(f, t)
+        ).catch(() => [] as Row[]);
+        await this.assertNoDuplicateSubCriterion(
+          items.map(i => i.sub_criterion_id),
+          tuRows.map(r => String(r.unit_id)),
+          taskId
+        );
+      }
+
       const { error: delErr } = await this.supabase.from('task_sub_criteria').delete().eq('task_id', Number(taskId));
       if (delErr) return { success: false, message: friendlyError(delErr) };
       if (items.length > 0) {
@@ -2693,12 +3296,72 @@ export class SupabaseGd1Repository implements Pick<Repository, Gd1Keys> {
     return { sentCount: unitRows.length, recipients: unitRows.map((r) => String(r.name)) };
   }
 
+  /** Lấy danh sách thông báo gửi cho chính người đang đăng nhập */
+  async listMyNotifications(): Promise<DbNotification[]> {
+    const user = await this.getCurrentUser();
+    if (!user?.memberId) return [];
+    const rpcRes = await this.supabase.rpc('my_notifications');
+    if (!rpcRes.error && Array.isArray(rpcRes.data)) {
+      return (rpcRes.data as Row[]).map(toNotification);
+    }
+    // Fallback nếu chưa chạy migration phase 7
+    const { data } = await this.supabase
+      .from('notifications')
+      .select('*')
+      .eq('recipient_id', Number(user.memberId))
+      .order('created_at', { ascending: false })
+      .limit(100);
+    return (data ?? []).map(toNotification);
+  }
+
+  /** Lấy toàn bộ thông báo hệ thống (Admin xem lịch sử ở trang Nhắc nhở) */
+  async listAllNotifications(limit = 100): Promise<DbNotification[]> {
+    const { data } = await this.supabase
+      .from('notifications')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(limit);
+    return (data ?? []).map(toNotification);
+  }
+
+  /** Đánh dấu 1 thông báo là đã đọc */
+  async markNotificationAsRead(id: string): Promise<{ success: boolean }> {
+    const rpc = await this.supabase.rpc('mark_notification_read', { p_id: Number(id) });
+    if (!rpc.error) return { success: true };
+    // Fallback update trực tiếp
+    const { error } = await this.supabase
+      .from('notifications')
+      .update({ is_read: true, read_at: new Date().toISOString() })
+      .eq('id', Number(id));
+    return { success: !error };
+  }
+
+  /** Đánh dấu TẤT CẢ thông báo của mình là đã đọc */
+  async markAllNotificationsAsRead(): Promise<{ success: boolean; count?: number }> {
+    const user = await this.getCurrentUser();
+    if (!user?.memberId) return { success: true, count: 0 };
+    const rpc = await this.supabase.rpc('mark_all_notifications_read');
+    if (!rpc.error) return { success: true, count: Number(rpc.data ?? 0) };
+    // Fallback update trực tiếp
+    const { data, error } = await this.supabase
+      .from('notifications')
+      .update({ is_read: true, read_at: new Date().toISOString() })
+      .eq('recipient_id', Number(user.memberId))
+      .eq('is_read', false)
+      .select('id');
+    return { success: !error, count: (data ?? []).length };
+  }
+
   // =====================================================================
   // GIAI ĐOẠN 2 — TÍNH ĐIỂM CHI ĐOÀN
   // =====================================================================
 
   async calculateUnitScores(): Promise<UnitScoreCalculation[]> {
     const units = (await fetchAll((f, t) => this.supabase.from('units').select('*').range(f, t))).map(toUnit);
+    // Tổng điểm tối đa thực tế = tổng max_score của toàn bộ tiêu chí con (bộ Tỉnh gửi có thể khác 100)
+    const subCriteriaAll = await fetchAll((f, t) =>
+      this.supabase.from('sub_criteria').select('max_score').range(f, t)
+    ).catch(() => [] as Row[]);
     const [subs, results, memberSubs, taskUnits, taskSubs] = await Promise.all([
       fetchAll((f, t) => this.supabase.from('criterion_submissions').select('*').eq('status', 'approved').range(f, t)),
       fetchAll((f, t) => this.supabase.from('task_results').select('unit_id, task_id, status').eq('status', 'approved').range(f, t)),
@@ -2728,12 +3391,88 @@ export class SupabaseGd1Repository implements Pick<Repository, Gd1Keys> {
 
       const participantCount = memberSubs.filter((r: Row) => String(r.unit_id) === unit.id).length;
       const totalScore = criteriaScore;
-      const maxPossible = 100;
+      // Tổng điểm tối đa = tổng max_score của bộ tiêu chí năm (bộ do Tỉnh gửi có thể khác 100)
+      const maxPossible = subCriteriaAll.length > 0
+        ? subCriteriaAll.reduce((sum, sc) => sum + Number(sc.max_score ?? 0), 0)
+        : 100;
       return {
         unit, totalScore, maxPossible, criteriaScore, taskCount, taskAssignedCount, participantCount,
         completionRate: taskAssignedCount > 0
           ? Math.min(100, Math.round((taskCount / taskAssignedCount) * 100))
           : 0,
+      };
+    });
+  }
+
+  async bulkApproveTaskResults(ids: string[], note?: string): Promise<{ success: boolean; approved: number; message?: string }> {
+    if (ids.length === 0) return { success: true, approved: 0 };
+    const { data, error } = await this.supabase.rpc('bulk_approve_task_results', {
+      p_ids: ids.map(Number),
+      p_note: note || 'Đạt yêu cầu',
+    });
+    if (error) return { success: false, approved: 0, message: friendlyError(error) };
+    const r = (data ?? {}) as Row;
+    return { success: !!r.success, approved: Number(r.approved ?? 0), message: r.message };
+  }
+
+  async getUnitCriterionProgress(unitId: string): Promise<Array<{
+    subCriterionId: string;
+    criterionName: string;
+    subName: string;
+    maxScore: number;
+    totalTasks: number;
+    doneTasks: number;
+    pendingTasks: number;
+  }>> {
+    const { data, error } = await this.supabase.rpc('unit_criterion_progress', {
+      p_unit_id: Number(unitId),
+    });
+    if (error) return [];
+    return ((data ?? []) as Row[]).map(r => ({
+      subCriterionId: String(r.sub_criterion_id),
+      criterionName: str(r.criterion_name),
+      subName: str(r.sub_name),
+      maxScore: Number(r.max_score ?? 0),
+      totalTasks: Number(r.total_tasks ?? 0),
+      doneTasks: Number(r.done_tasks ?? 0),
+      pendingTasks: Number(r.pending_tasks ?? 0),
+    }));
+  }
+
+  async listTasksBySubCriterion(subCriterionId: string): Promise<Array<{
+    task: DbTask;
+    results: DbTaskResult[];
+    unitName: string;
+  }>> {
+    const taskRows = await fetchAll((f, t) =>
+      this.supabase.from('tasks').select('*')
+        .eq('source_sub_criterion_id', Number(subCriterionId))
+        .order('assigned_at', { ascending: false })
+        .range(f, t)
+    );
+    if (taskRows.length === 0) return [];
+
+    const taskIds = taskRows.map((r: Row) => Number(r.id));
+    const [resultRows, unitRows] = await Promise.all([
+      fetchAll((f, t) => this.supabase.from('task_results').select('*').in('task_id', taskIds).range(f, t)),
+      fetchAll((f, t) => this.supabase.from('units').select('id, name').range(f, t)),
+    ]);
+
+    const unitNameById = new Map(unitRows.map((u: Row) => [String(u.id), String(u.name)]));
+    const resultsByTask = new Map<string, DbTaskResult[]>();
+    for (const r of resultRows) {
+      const k = String(r.task_id);
+      resultsByTask.set(k, [...(resultsByTask.get(k) ?? []), toTaskResult(r)]);
+    }
+
+    return taskRows.map((row: Row) => {
+      const task = toTask(row);
+      const results = resultsByTask.get(task.id) ?? [];
+      const firstUnitId = results[0]?.unit_id;
+      return {
+        task,
+        results,
+        unitName: firstUnitId ? (unitNameById.get(firstUnitId) ?? '') : '',
       };
     });
   }
@@ -2828,6 +3567,979 @@ export class SupabaseGd1Repository implements Pick<Repository, Gd1Keys> {
       out = out.filter((x) => normalizeText(`${x.log.table_name} ${x.log.row_id} ${x.log.actor_role} ${x.actor?.full_name ?? ''}`).includes(s));
     }
     return out;
+  }
+
+  // =====================================================================
+  // ĐÁNH GIÁ, XẾP LOẠI HẰNG NĂM
+  // =====================================================================
+
+  async listEvaluationPeriods(): Promise<DbEvaluationPeriod[]> {
+    const rows = await fetchAll((f, t) =>
+      this.supabase.from('evaluation_periods').select('*')
+        .order('year', { ascending: false }).order('period_type')
+        .range(f, t));
+    return rows.map(toEvaluationPeriod);
+  }
+
+  async saveEvaluationPeriod(input: {
+    year: number; periodType: PeriodType; name: string;
+  }): Promise<{ success: boolean; message?: string; period?: DbEvaluationPeriod }> {
+    const { data, error } = await this.supabase.rpc('evaluation_upsert_period', {
+      p_year: input.year,
+      p_period_type: input.periodType,
+      p_name: input.name,
+    });
+    if (error) return { success: false, message: friendlyError(error) };
+    return { success: true, period: toEvaluationPeriod(data as Row) };
+  }
+
+  async setEvaluationPeriodStatus(id: string, status: PeriodStatus): Promise<{ success: boolean; message?: string }> {
+    const { error } = await this.supabase.rpc('evaluation_set_period_status', {
+      p_period_id: Number(id),
+      p_status: status,
+    });
+    if (error) return { success: false, message: friendlyError(error) };
+    return { success: true };
+  }
+
+  async listMemberRldvLevels(year: number): Promise<DbMemberRldvLevel[]> {
+    const rows = await fetchAll((f, t) =>
+      this.supabase.from('member_rldv_levels').select('*').eq('year', year).range(f, t));
+    return rows.map(toMemberRldvLevel);
+  }
+
+  async saveMemberRldvLevel(input: {
+    memberId: string; year: number; level: RatingLevel; note?: string;
+  }): Promise<{ success: boolean; message?: string }> {
+    const me = await this.getCurrentUser();
+    const { error } = await this.supabase.from('member_rldv_levels').upsert({
+      member_id: Number(input.memberId),
+      year: input.year,
+      level: input.level,
+      note: input.note ?? null,
+      evaluated_at: todayVN(),
+      evaluated_by: numOrNull(me?.memberId),
+    }, { onConflict: 'member_id,year' });
+    if (error) return { success: false, message: friendlyError(error) };
+    return { success: true };
+  }
+
+  async listMemberDisciplines(filters?: { memberId?: string; year?: number }): Promise<DbMemberDiscipline[]> {
+    let q = this.supabase.from('member_disciplines').select('*');
+    if (filters?.memberId) q = q.eq('member_id', Number(filters.memberId));
+    if (filters?.year) {
+      q = q.gte('decided_at', `${filters.year}-01-01`).lte('decided_at', `${filters.year}-12-31`);
+    }
+    const rows = await fetchAll((f, t) => q.order('decided_at', { ascending: false }).range(f, t));
+    return rows.map(toMemberDiscipline);
+  }
+
+  async saveMemberDiscipline(input: {
+    id?: string; memberId: string; decisionNo: string; form: DisciplineForm; decidedAt: string;
+    effectiveFrom?: string | null; effectiveTo?: string | null; reason?: string;
+  }): Promise<{ success: boolean; message?: string }> {
+    const me = await this.getCurrentUser();
+    const payload = {
+      member_id: Number(input.memberId),
+      decision_no: input.decisionNo,
+      form: input.form,
+      decided_at: input.decidedAt,
+      effective_from: input.effectiveFrom || null,
+      effective_to: input.effectiveTo || null,
+      reason: input.reason || null,
+      created_by: numOrNull(me?.memberId),
+    };
+    const { error } = input.id
+      ? await this.supabase.from('member_disciplines').update(payload).eq('id', Number(input.id))
+      : await this.supabase.from('member_disciplines').insert(payload);
+    if (error) return { success: false, message: friendlyError(error) };
+    return { success: true };
+  }
+
+  async deleteMemberDiscipline(id: string): Promise<{ success: boolean; message?: string }> {
+    const { error } = await this.supabase.from('member_disciplines').delete().eq('id', Number(id));
+    if (error) return { success: false, message: friendlyError(error) };
+    return { success: true };
+  }
+
+  async listMemberEvaluations(periodId: string): Promise<DbMemberEvaluation[]> {
+    const rows = await fetchAll((f, t) =>
+      this.supabase.from('member_evaluations').select('*')
+        .eq('period_id', Number(periodId)).range(f, t));
+    return rows.map(toMemberEvaluation);
+  }
+
+  async generateMemberEvaluations(
+    periodId: string,
+    options?: { recompute?: boolean }
+  ): Promise<{ success: boolean; created: number; updated: number; message?: string }> {
+    const period = await this.supabase.from('evaluation_periods').select('*').eq('id', Number(periodId)).maybeSingle();
+    if (period.error) return { success: false, created: 0, updated: 0, message: friendlyError(period.error) };
+    if (!period.data) return { success: false, created: 0, updated: 0, message: 'Không tìm thấy kỳ đánh giá' };
+    const p = toEvaluationPeriod(period.data as Row);
+
+    // Dữ liệu nguồn trong kỳ
+    const [members, taskRels, taskResults, memberSubs, rldv, disciplines, existing] = await Promise.all([
+      fetchAll((f, t) => this.supabase.from('members').select('*').eq('is_active', true).range(f, t)),
+      fetchAll((f, t) => this.supabase.from('task_units').select('*').range(f, t)),
+      fetchAll((f, t) => this.supabase.from('task_results').select('*').range(f, t)),
+      fetchAll((f, t) => this.supabase.from('member_submissions').select('*').range(f, t)),
+      fetchAll((f, t) => this.supabase.from('member_rldv_levels').select('*').eq('year', p.year).range(f, t)),
+      fetchAll((f, t) => this.supabase.from('member_disciplines').select('*').range(f, t)),
+      fetchAll((f, t) => this.supabase.from('member_evaluations').select('*').eq('period_id', Number(periodId)).range(f, t)),
+    ]);
+    const tasks = await fetchAll((f, t) =>
+      this.supabase.from('tasks').select('id, due_date, status').range(f, t));
+    const taskById = new Map<string, Row>(tasks.map((t: Row) => [String(t.id), t]));
+
+    // Nhiệm vụ được giao cho từng chi đoàn, chỉ trong khoảng thời gian của kỳ
+    const assignedByUnit = new Map<string, Set<string>>();
+    for (const rel of taskRels) {
+      const task = taskById.get(String(rel.task_id));
+      if (!task) continue;
+      const due = String(task.due_date ?? '').slice(0, 10);
+      if (due && (due < p.start_date || due > p.end_date)) continue;
+      const k = String(rel.unit_id);
+      if (!assignedByUnit.has(k)) assignedByUnit.set(k, new Set());
+      assignedByUnit.get(k)!.add(String(rel.task_id));
+    }
+
+    // Chi đoàn đã nộp + được duyệt
+    const completedByUnit = new Map<string, Set<string>>();
+    for (const r of taskResults) {
+      if (r.status !== 'approved') continue;
+      const k = String(r.unit_id);
+      if (!completedByUnit.has(k)) completedByUnit.set(k, new Set());
+      completedByUnit.get(k)!.add(String(r.task_id));
+    }
+
+    // Đoàn viên có bài nộp cá nhân được duyệt, theo nhiệm vụ
+    const approvedByMember = new Map<string, Set<string>>();
+    for (const s of memberSubs) {
+      if (s.status !== 'approved') continue;
+      const k = String(s.member_id);
+      if (!approvedByMember.has(k)) approvedByMember.set(k, new Set());
+      approvedByMember.get(k)!.add(String(s.task_id));
+    }
+
+    const rldvByMember = new Map<string, RatingLevel>(
+      rldv.map((r: Row) => [String(r.member_id), r.level as RatingLevel ]));
+    const disByMember = new Map<string, Row[]>();
+    for (const d of disciplines) {
+      const k = String(d.member_id);
+      disByMember.set(k, [...(disByMember.get(k) ?? []), d]);
+    }
+    const existingByMember = new Map<string, Row>(existing.map((r: Row) => [String(r.member_id), r]));
+
+    const toCreate: Row[] = [];
+    const toUpdate: Array<{ id: string; payload: Row }> = [];
+
+    for (const m of members) {
+      const unitId = String(m.unit_id);
+      const assigned = assignedByUnit.get(unitId) ?? new Set<string>();
+      const completedUnit = completedByUnit.get(unitId) ?? new Set<string>();
+      const completedMember = approvedByMember.get(String(m.id)) ?? new Set<string>();
+
+      // Nhiệm vụ được giao cho chi đoàn; đoàn viên được tính hoàn thành khi
+      // bài nộp cá nhân của họ được duyệt, hoặc chi đoàn đã hoàn thành nhiệm vụ đó.
+      const totalTasks = assigned.size;
+      let completedTasks = 0;
+      if (totalTasks > 0) {
+        for (const taskId of assigned) {
+          if (completedMember.has(taskId) || completedUnit.has(taskId)) completedTasks += 1;
+        }
+      }
+
+      const disciplineRows = (disByMember.get(String(m.id)) ?? []).map((d: Row) => ({
+        form: d.form as DisciplineForm,
+        decided_at: String(d.decided_at ?? ''),
+        effective_to: d.effective_to ? String(d.effective_to) : null,
+      }));
+
+      const result = computeMemberRating({
+        totalTasks,
+        completedTasks,
+        rldvLevel: rldvByMember.get(String(m.id)) ?? null,
+        hasStrictDiscipline: hasStrictDisciplineInPeriod(disciplineRows, p.start_date, p.end_date),
+        isPartyMember: !!m.is_party_member,
+        isLongAbsent: false,
+      });
+
+      const payload = {
+        period_id: Number(periodId),
+        member_id: Number(m.id),
+        unit_id: Number(m.unit_id),
+        total_tasks: totalTasks,
+        completed_tasks: completedTasks,
+        participation_rate: result.participationRate,
+        is_party_member_block: !!m.is_party_member,
+        is_long_absent: false,
+        auto_rating: result.autoRating,
+        updated_at: new Date().toISOString(),
+      };
+
+      const prev = existingByMember.get(String(m.id));
+      if (!prev) {
+        toCreate.push(payload);
+      } else if (options?.recompute && prev.status !== 'finalized') {
+        toUpdate.push({ id: String(prev.id), payload });
+      }
+    }
+
+    let created = 0;
+    if (toCreate.length > 0) {
+      const { error } = await this.supabase.from('member_evaluations').insert(toCreate);
+      if (error) return { success: false, created: 0, updated: 0, message: friendlyError(error) };
+      created = toCreate.length;
+    }
+    for (const u of toUpdate) {
+      const { error } = await this.supabase.from('member_evaluations').update(u.payload).eq('id', Number(u.id));
+      if (error) return { success: false, created, updated: 0, message: friendlyError(error) };
+    }
+
+    return {
+      success: true,
+      created,
+      updated: toUpdate.length,
+      message: `Đã tạo ${created} phiếu mới, cập nhật ${toUpdate.length} phiếu.`,
+    };
+  }
+
+  async saveMemberEvaluationResponse(input: {
+    evaluationId: string; response: 'confirmed' | 'disagreed'; feedback?: string;
+  }): Promise<{ success: boolean; message?: string }> {
+    const { error } = await this.supabase.from('member_evaluations').update({
+      member_response: input.response,
+      member_feedback: input.feedback ?? null,
+      member_responded_at: new Date().toISOString(),
+      status: 'member_responded',
+      updated_at: new Date().toISOString(),
+    }).eq('id', Number(input.evaluationId));
+    if (error) return { success: false, message: friendlyError(error) };
+    return { success: true };
+  }
+
+  async reviewMemberEvaluation(input: {
+    evaluationId: string; rating: RatingLevel; note?: string;
+  }): Promise<{ success: boolean; message?: string }> {
+    const me = await this.getCurrentUser();
+    const { error } = await this.supabase.from('member_evaluations').update({
+      secretary_rating: input.rating,
+      secretary_note: input.note ?? null,
+      secretary_id: numOrNull(me?.memberId),
+      secretary_at: new Date().toISOString(),
+      status: 'secretary_done',
+      updated_at: new Date().toISOString(),
+    }).eq('id', Number(input.evaluationId));
+    if (error) return { success: false, message: friendlyError(error) };
+    return { success: true };
+  }
+
+  async finalizeMemberEvaluation(input: {
+    evaluationId: string; rating: RatingLevel; note?: string;
+  }): Promise<{ success: boolean; message?: string }> {
+    const me = await this.getCurrentUser();
+    const { error } = await this.supabase.from('member_evaluations').update({
+      admin_rating: input.rating,
+      admin_note: input.note ?? null,
+      admin_id: numOrNull(me?.memberId),
+      admin_at: new Date().toISOString(),
+      status: 'finalized',
+      updated_at: new Date().toISOString(),
+    }).eq('id', Number(input.evaluationId));
+    if (error) return { success: false, message: friendlyError(error) };
+    return { success: true };
+  }
+
+  async listUnitEvaluations(periodId: string): Promise<DbUnitEvaluation[]> {
+    const rows = await fetchAll((f, t) =>
+      this.supabase.from('unit_evaluations').select('*')
+        .eq('period_id', Number(periodId)).range(f, t));
+    return rows.map(toUnitEvaluation);
+  }
+
+  async generateUnitEvaluations(periodId: string): Promise<{ success: boolean; created: number; updated: number; message?: string }> {
+    const period = await this.supabase.from('evaluation_periods').select('*').eq('id', Number(periodId)).maybeSingle();
+    if (period.error) return { success: false, created: 0, updated: 0, message: friendlyError(period.error) };
+    if (!period.data) return { success: false, created: 0, updated: 0, message: 'Không tìm thấy kỳ đánh giá' };
+    const p = toEvaluationPeriod(period.data as Row);
+
+    const [units, evaluations, members, existing] = await Promise.all([
+      fetchAll((f, t) => this.supabase.from('units').select('*').eq('is_active', true).range(f, t)),
+      fetchAll((f, t) => this.supabase.from('member_evaluations').select('*').eq('period_id', Number(periodId)).range(f, t)),
+      fetchAll((f, t) => this.supabase.from('members').select('*').eq('is_active', true).range(f, t)),
+      fetchAll((f, t) => this.supabase.from('unit_evaluations').select('*').eq('period_id', Number(periodId)).range(f, t)),
+    ]);
+
+    // % nhiệm vụ của chi đoàn: dùng lại số liệu đã tính ở phiếu đoàn viên
+    const unitScores = await this.calculateUnitScores();
+
+    const evalByUnit = new Map<string, Row[]>();
+    for (const e of evaluations) {
+      const k = String(e.unit_id);
+      evalByUnit.set(k, [...(evalByUnit.get(k) ?? []), e]);
+    }
+    const memberCountByUnit = new Map<string, number>();
+    for (const m of members) {
+      const k = String(m.unit_id);
+      memberCountByUnit.set(k, (memberCountByUnit.get(k) ?? 0) + 1);
+    }
+    const scoreByUnit = new Map<string, number>(unitScores.map(s => [s.unit.id, s.completionRate]));
+    const existingByUnit = new Map<string, Row>(existing.map((r: Row) => [String(r.unit_id), r]));
+
+    const toCreate: Row[] = [];
+    const toUpdate: Array<{ id: string; payload: Row }> = [];
+
+    for (const u of units) {
+      const unitId = String(u.id);
+      const evals = evalByUnit.get(unitId) ?? [];
+      const memberTotal = memberCountByUnit.get(unitId) ?? 0;
+      const goodCount = evals.filter((e: Row) =>
+        e.admin_rating === 'excellent' || e.admin_rating === 'good' ||
+        (!e.admin_rating && (e.auto_rating === 'excellent' || e.auto_rating === 'good'))
+      ).length;
+      const failCount = evals.filter((e: Row) =>
+        (e.admin_rating ?? e.auto_rating) === 'fail'
+      ).length;
+      const goodRate = percent(goodCount, memberTotal || evals.length);
+      const failRate = percent(failCount, memberTotal || evals.length);
+
+      // Tỷ lệ hồ sơ số hoá: % đoàn viên có đủ trường bắt buộc
+      const unitMembers = members.filter((m: Row) => String(m.unit_id) === unitId);
+      const complete = unitMembers.filter((m: Row) =>
+        m.full_name && m.birth_date && m.gender && m.phone && m.joined_date && m.central_member_code
+      ).length;
+      const digitalRate = percent(complete, unitMembers.length);
+
+      const taskRate = scoreByUnit.get(unitId) ?? 0;
+
+      const result = computeUnitRating({
+        taskCompletionRate: taskRate,
+        memberGoodRate: goodRate,
+        digitalRate,
+        meetingOk: false,
+        feeOk: false,
+        hasDiscipline: failRate > 20,
+      });
+
+      const payload = {
+        period_id: Number(periodId),
+        unit_id: Number(u.id),
+        task_completion_rate: taskRate,
+        member_good_rate: goodRate,
+        member_fail_count: failCount,
+        member_total: memberTotal,
+        digital_rate: digitalRate,
+        auto_rating: result.autoRating,
+        updated_at: new Date().toISOString(),
+      };
+
+      const prev = existingByUnit.get(unitId);
+      if (!prev) {
+        toCreate.push(payload);
+      } else if (prev.status !== 'finalized') {
+        toUpdate.push({ id: String(prev.id), payload });
+      }
+    }
+
+    let created = 0;
+    if (toCreate.length > 0) {
+      const { error } = await this.supabase.from('unit_evaluations').insert(toCreate);
+      if (error) return { success: false, created: 0, updated: 0, message: friendlyError(error) };
+      created = toCreate.length;
+    }
+    for (const u of toUpdate) {
+      const { error } = await this.supabase.from('unit_evaluations').update(u.payload).eq('id', Number(u.id));
+      if (error) return { success: false, created, updated: 0, message: friendlyError(error) };
+    }
+
+    return {
+      success: true,
+      created,
+      updated: toUpdate.length,
+      message: `Đã tạo ${created} phiếu chi đoàn, cập nhật ${toUpdate.length} phiếu.`,
+    };
+  }
+
+  async finalizeUnitEvaluation(input: {
+    unitEvaluationId: string;
+    rating: RatingLevel;
+    meetingOk: boolean;
+    feeOk: boolean;
+    hasDiscipline: boolean;
+    note?: string;
+  }): Promise<{ success: boolean; message?: string }> {
+    const me = await this.getCurrentUser();
+    const { error } = await this.supabase.from('unit_evaluations').update({
+      final_rating: input.rating,
+      meeting_ok: input.meetingOk,
+      fee_ok: input.feeOk,
+      has_discipline: input.hasDiscipline,
+      note: input.note ?? null,
+      rated_by: numOrNull(me?.memberId),
+      rated_at: new Date().toISOString(),
+      status: 'finalized',
+      updated_at: new Date().toISOString(),
+    }).eq('id', Number(input.unitEvaluationId));
+    if (error) return { success: false, message: friendlyError(error) };
+    return { success: true };
+  }
+
+  // =====================================================================
+  // GIAI ĐOẠN 9 · THU NỘP & QUẢN LÝ ĐOÀN PHÍ (HƯỚNG DẪN 39)
+  // =====================================================================
+
+  async getUnionFeeSettings(): Promise<DbUnionFeeSettings> {
+    const { data, error } = await this.supabase
+      .from('union_fee_settings')
+      .select('*')
+      .eq('id', 1)
+      .maybeSingle();
+
+    if (error) fail(error);
+    if (!data) {
+      return {
+        id: 1,
+        bank_name: 'MB Bank',
+        bank_code: '970422',
+        account_number: '0585682707',
+        account_holder: 'DUONG PHUOC LOC',
+        auto_remind_day: 5,
+        fee_non_salary: 2000,
+        fee_has_salary: 5000,
+        payos_client_id: '8ee9d939-9f65-4c50-a6bd-d0268ce14dfd',
+        payos_api_key: '4e07a201-0bab-43ad-89aa-d2bcf6ca9e96',
+        payos_checksum_key: '5e51534bea3712dc6d4fc59e44418e3172d2a5369675e846c2ced044b2d41363',
+        payos_active: true,
+        updated_at: new Date().toISOString(),
+      };
+    }
+    return toUnionFeeSettings(data as Row);
+  }
+
+  async updateUnionFeeSettings(updates: Partial<DbUnionFeeSettings>): Promise<{ success: boolean; message?: string }> {
+    const me = await this.getCurrentUser();
+    const payload: Row = {
+      ...updates,
+      updated_by: numOrNull(me?.memberId),
+      updated_at: new Date().toISOString(),
+    };
+    delete payload.id;
+
+    const { error } = await this.supabase
+      .from('union_fee_settings')
+      .update(payload)
+      .eq('id', 1);
+
+    if (error) return { success: false, message: friendlyError(error) };
+    return { success: true };
+  }
+
+  async listUnionFeePayments(filters?: {
+    memberId?: string;
+    unitId?: string;
+    year?: number;
+    status?: FeePaymentStatus;
+  }): Promise<DbUnionFeePayment[]> {
+    let q = this.supabase.from('union_fee_payments').select('*');
+    if (filters?.memberId) q = q.eq('member_id', Number(filters.memberId));
+    if (filters?.unitId) q = q.eq('unit_id', Number(filters.unitId));
+    if (filters?.year) q = q.eq('year', filters.year);
+    if (filters?.status) q = q.eq('status', filters.status);
+
+    const rows = await fetchAll((f, t) => q.order('created_at', { ascending: false }).range(f, t));
+    return rows.map(toUnionFeePayment);
+  }
+
+  async createUnionFeePayment(input: {
+    memberId: string;
+    unitId: string;
+    year: number;
+    months: number[];
+    amount: number;
+    paymentMethod: FeePaymentMethod;
+    orderCode?: number | null;
+    evidenceUrl?: string;
+    note?: string;
+  }): Promise<{ success: boolean; message?: string; paymentId?: string }> {
+    const { data, error } = await this.supabase
+      .from('union_fee_payments')
+      .insert({
+        member_id: Number(input.memberId),
+        unit_id: Number(input.unitId),
+        year: input.year,
+        months: input.months,
+        amount: input.amount,
+        payment_method: input.paymentMethod,
+        status: input.paymentMethod === 'cash' ? 'approved' : 'pending',
+        order_code: input.orderCode || null,
+        evidence_url: input.evidenceUrl || null,
+        note: input.note || null,
+        reviewed_at: input.paymentMethod === 'cash' ? new Date().toISOString() : null,
+      })
+      .select('id')
+      .single();
+
+    if (error) return { success: false, message: friendlyError(error) };
+    return { success: true, paymentId: String(data.id) };
+  }
+
+  async reviewUnionFeePayment(input: {
+    paymentId: string;
+    status: 'approved' | 'rejected';
+    note?: string;
+  }): Promise<{ success: boolean; message?: string }> {
+    const me = await this.getCurrentUser();
+    const { error } = await this.supabase
+      .from('union_fee_payments')
+      .update({
+        status: input.status,
+        note: input.note || null,
+        reviewed_by: numOrNull(me?.memberId),
+        reviewed_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', Number(input.paymentId));
+
+    if (error) return { success: false, message: friendlyError(error) };
+    return { success: true };
+  }
+
+  async confirmPayOsPayment(orderCode: number, amount: number): Promise<{ success: boolean; message?: string }> {
+    const { data, error } = await this.supabase.rpc('payos_confirm_payment', {
+      p_order_code: orderCode,
+      p_amount: amount,
+    });
+    if (error) return { success: false, message: friendlyError(error) };
+    return { success: (data as any)?.success ?? true, message: (data as any)?.message };
+  }
+
+  async createPayOsPaymentLink(input: {
+    orderCode: number;
+    amount: number;
+    description: string;
+    buyerName?: string;
+    buyerPhone?: string;
+    expiresInMinutes?: number;
+  }) {
+    try {
+      const { data, error } = await this.supabase.functions.invoke('payos-create-payment', {
+        body: {
+          action: 'create',
+          orderCode: input.orderCode,
+          amount: input.amount,
+          description: input.description,
+          buyerName: input.buyerName,
+          buyerPhone: input.buyerPhone,
+          expiresInMinutes: input.expiresInMinutes ?? 15,
+          returnUrl: `${window.location.origin}${window.location.pathname}#/doan-phi`,
+          cancelUrl: `${window.location.origin}${window.location.pathname}#/doan-phi`,
+        },
+      });
+      if (error) {
+        // Supabase Functions trả lỗi dưới dạng FunctionsHttpError có context
+        const ctx = (error as { context?: { json?: () => Promise<unknown> } }).context;
+        let msg = error.message || 'Lỗi gọi payOS';
+        if (ctx && typeof ctx.json === 'function') {
+          try {
+            const body = (await ctx.json()) as { message?: string };
+            if (body?.message) msg = body.message;
+          } catch { /* ignore */ }
+        }
+        return { success: false, message: msg };
+      }
+      return (data ?? { success: false, message: 'Không nhận được dữ liệu từ payOS' }) as {
+        success: boolean;
+        message?: string;
+        paymentLinkId?: string;
+        checkoutUrl?: string;
+        qrCode?: string;
+        bin?: string;
+        accountNumber?: string;
+        accountName?: string;
+        amount?: number;
+        description?: string;
+        orderCode?: number;
+        expiredAt?: number;
+        status?: string;
+      };
+    } catch (err) {
+      return { success: false, message: err instanceof Error ? err.message : 'Lỗi không xác định' };
+    }
+  }
+
+  async checkPayOsPaymentStatus(orderCode: number) {
+    try {
+      const { data, error } = await this.supabase.functions.invoke('payos-create-payment', {
+        body: { action: 'status', orderCode },
+      });
+      if (error) {
+        const ctx = (error as { context?: { json?: () => Promise<unknown> } }).context;
+        let msg = error.message || 'Lỗi kiểm tra trạng thái';
+        if (ctx && typeof ctx.json === 'function') {
+          try {
+            const body = (await ctx.json()) as { message?: string };
+            if (body?.message) msg = body.message;
+          } catch { /* ignore */ }
+        }
+        return { success: false, message: msg };
+      }
+      return (data ?? { success: false }) as {
+        success: boolean;
+        message?: string;
+        status?: string;
+        amount?: number;
+        amountPaid?: number;
+        amountRemaining?: number;
+        transactions?: Array<{ reference: string; amount: number; transactionDateTime: string }>;
+      };
+    } catch (err) {
+      return { success: false, message: err instanceof Error ? err.message : 'Lỗi không xác định' };
+    }
+  }
+
+  async updateMemberFeeStatus(input: {
+    memberId: string;
+    hasSalary?: boolean;
+    exemptMonths?: number[];
+    transferredOutMonth?: number | null;
+  }): Promise<{ success: boolean; message?: string }> {
+    const updates: Row = {};
+    if (input.hasSalary !== undefined) updates.has_salary = input.hasSalary;
+    if (input.exemptMonths !== undefined) updates.exempt_months = input.exemptMonths;
+    if (input.transferredOutMonth !== undefined) updates.transferred_out_month = input.transferredOutMonth;
+
+    const { error } = await this.supabase
+      .from('members')
+      .update(updates)
+      .eq('id', Number(input.memberId));
+
+    if (error) return { success: false, message: friendlyError(error) };
+    return { success: true };
+  }
+
+  async listUnitFeeDistributions(year: number): Promise<DbUnitFeeDistribution[]> {
+    const rows = await fetchAll((f, t) =>
+      this.supabase.from('unit_fee_distributions').select('*').eq('year', year).range(f, t)
+    );
+    return rows.map(toUnitFeeDistribution);
+  }
+
+  async generateUnitFeeDistributions(year: number): Promise<{ success: boolean; count: number; message?: string }> {
+    const [units, payments, existing] = await Promise.all([
+      fetchAll((f, t) => this.supabase.from('units').select('id, name').eq('is_active', true).range(f, t)),
+      fetchAll((f, t) => this.supabase.from('union_fee_payments').select('*').eq('year', year).eq('status', 'approved').range(f, t)),
+      fetchAll((f, t) => this.supabase.from('unit_fee_distributions').select('*').eq('year', year).range(f, t)),
+    ]);
+
+    const collectedByUnit = new Map<string, number>();
+    for (const p of payments) {
+      const uId = String(p.unit_id);
+      collectedByUnit.set(uId, (collectedByUnit.get(uId) ?? 0) + Number(p.amount ?? 0));
+    }
+
+    const existingMap = new Map<string, Row>(existing.map((r: Row) => [String(r.unit_id), r]));
+    const toInsert: Row[] = [];
+    const toUpdate: Array<{ id: number; payload: Row }> = [];
+
+    for (const u of units) {
+      const uId = String(u.id);
+      const total = collectedByUnit.get(uId) ?? 0;
+      const unitShare = Math.round((total * 2) / 3);
+      const communeShare = total - unitShare;
+
+      const prev = existingMap.get(uId);
+      if (!prev) {
+        toInsert.push({
+          unit_id: Number(u.id),
+          year,
+          period_label: 'Cả năm',
+          total_collected: total,
+          unit_share: unitShare,
+          commune_share: communeShare,
+          is_refunded: false,
+        });
+      } else if (!prev.is_refunded) {
+        toUpdate.push({
+          id: Number(prev.id),
+          payload: {
+            total_collected: total,
+            unit_share: unitShare,
+            commune_share: communeShare,
+            updated_at: new Date().toISOString(),
+          },
+        });
+      }
+    }
+
+    if (toInsert.length > 0) {
+      const { error } = await this.supabase.from('unit_fee_distributions').insert(toInsert);
+      if (error) return { success: false, count: 0, message: friendlyError(error) };
+    }
+    for (const u of toUpdate) {
+      await this.supabase.from('unit_fee_distributions').update(u.payload).eq('id', u.id);
+    }
+
+    return { success: true, count: toInsert.length + toUpdate.length };
+  }
+
+  async markFeeDistributionRefunded(input: {
+    distributionId: string;
+    receiptNo?: string;
+    note?: string;
+  }): Promise<{ success: boolean; message?: string }> {
+    const me = await this.getCurrentUser();
+    const { error } = await this.supabase
+      .from('unit_fee_distributions')
+      .update({
+        is_refunded: true,
+        refunded_at: todayVN(),
+        refunded_by: numOrNull(me?.memberId),
+        receipt_no: input.receiptNo || null,
+        note: input.note || null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', Number(input.distributionId));
+
+    if (error) return { success: false, message: friendlyError(error) };
+    return { success: true };
+  }
+
+  async sendUnionFeeReminder(input: {
+    recipientType: 'member' | 'unit' | 'all_unpaid';
+    memberId?: string;
+    unitId?: string;
+    year: number;
+    month?: number;
+  }): Promise<{ success: boolean; count: number; message?: string }> {
+    const curMonth = input.month || new Date().getMonth() + 1;
+    let targetMemberIds: string[] = [];
+
+    if (input.recipientType === 'member' && input.memberId) {
+      targetMemberIds = [input.memberId];
+    } else if (input.recipientType === 'unit' && input.unitId) {
+      const members = await fetchAll((f, t) =>
+        this.supabase.from('members').select('id').eq('unit_id', Number(input.unitId)).eq('is_active', true).range(f, t)
+      );
+      targetMemberIds = members.map((m: Row) => String(m.id));
+    } else {
+      const members = await fetchAll((f, t) =>
+        this.supabase.from('members').select('id').eq('is_active', true).range(f, t)
+      );
+      targetMemberIds = members.map((m: Row) => String(m.id));
+    }
+
+    // Lọc ra các đoàn viên thực sự chưa nộp tháng này
+    const payments = await fetchAll((f, t) =>
+      this.supabase.from('union_fee_payments')
+        .select('member_id, months, status')
+        .eq('year', input.year)
+        .eq('status', 'approved')
+        .range(f, t)
+    );
+
+    const paidMemberMonth = new Set<string>();
+    for (const p of payments) {
+      const mId = String(p.member_id);
+      for (const m of (p.months || [])) {
+        paidMemberMonth.add(`${mId}_${m}`);
+      }
+    }
+
+    const unpaidIds = targetMemberIds.filter(id => !paidMemberMonth.has(`${id}_${curMonth}`));
+    if (unpaidIds.length === 0) {
+      return { success: true, count: 0, message: 'Tất cả đoàn viên trong phạm vi đã hoàn thành đoàn phí!' };
+    }
+
+    const notifs = unpaidIds.map(id => ({
+      recipient_id: Number(id),
+      type: 'reminder' as NotificationType,
+      level: 'orange' as NotificationLevel,
+      title: `Nhắc nộp đoàn phí tháng ${curMonth}/${input.year}`,
+      body: `Đồng chí còn chưa hoàn thành đoàn phí tháng ${curMonth}/${input.year}. Vui lòng mở mục Đoàn phí để quét mã VietQR thanh toán.`,
+      is_read: false,
+    }));
+
+    const { error } = await this.supabase.from('notifications').insert(notifs);
+    if (error) return { success: false, count: 0, message: friendlyError(error) };
+
+    return { success: true, count: unpaidIds.length };
+  }
+
+  // =====================================================================
+  // GIAI ĐOẠN 10 · HOÀN THIỆN NHIỆM VỤ, LÊN LỊCH THÔNG BÁO, ONBOARDING
+  // =====================================================================
+
+  async updateTask(input: {
+    taskId: string;
+    taskData: Partial<DbTask>;
+    unitIds?: string[];
+  }): Promise<{ success: boolean; message?: string }> {
+    const payload: Row = {};
+    if (input.taskData.title !== undefined) payload.title = input.taskData.title;
+    if (input.taskData.content !== undefined) payload.content = input.taskData.content;
+    if (input.taskData.due_date !== undefined) payload.due_date = input.taskData.due_date;
+    if (input.taskData.target !== undefined) payload.target = input.taskData.target;
+    if (input.taskData.evaluation_criteria !== undefined) payload.evaluation_criteria = input.taskData.evaluation_criteria;
+    if (input.taskData.submit_scope !== undefined) payload.submit_scope = input.taskData.submit_scope;
+    if (input.taskData.reminder_days !== undefined) payload.reminder_days = input.taskData.reminder_days;
+    if (input.taskData.lat !== undefined) payload.lat = input.taskData.lat;
+    if (input.taskData.lng !== undefined) payload.lng = input.taskData.lng;
+    if (input.taskData.source_sub_criterion_id !== undefined) {
+      payload.source_sub_criterion_id = input.taskData.source_sub_criterion_id
+        ? Number(input.taskData.source_sub_criterion_id)
+        : null;
+    }
+    // Định vị điểm danh
+    if (input.taskData.radius_m !== undefined) payload.radius_m = input.taskData.radius_m;
+    if (input.taskData.attendance_open_at !== undefined) payload.attendance_open_at = input.taskData.attendance_open_at;
+    if (input.taskData.attendance_close_at !== undefined) payload.attendance_close_at = input.taskData.attendance_close_at;
+
+    const { error } = await this.supabase
+      .from('tasks')
+      .update(payload)
+      .eq('id', Number(input.taskId));
+
+    if (error) return { success: false, message: friendlyError(error) };
+
+    // Cập nhật lại danh sách chi đoàn được giao nếu có truyền
+    if (input.unitIds !== undefined) {
+      await this.supabase.from('task_units').delete().eq('task_id', Number(input.taskId));
+      if (input.unitIds.length > 0) {
+        const rows = input.unitIds.map(uId => ({
+          task_id: Number(input.taskId),
+          unit_id: Number(uId),
+        }));
+        await this.supabase.from('task_units').insert(rows);
+      }
+    }
+
+    return { success: true };
+  }
+
+  async listScheduledNotifications(): Promise<DbScheduledNotification[]> {
+    const rows = await fetchAll((f, t) =>
+      this.supabase.from('scheduled_notifications')
+        .select('*')
+        .order('scheduled_at', { ascending: true })
+        .range(f, t)
+    );
+    return rows.map(toScheduledNotification);
+  }
+
+  async createScheduledNotification(input: {
+    title: string;
+    content: string;
+    level: 'yellow' | 'orange' | 'red';
+    recipientType: 'unit' | 'member' | 'all';
+    targetId?: string;
+    scheduledAt: string;
+  }): Promise<{ success: boolean; message?: string }> {
+    const me = await this.getCurrentUser();
+    const { error } = await this.supabase
+      .from('scheduled_notifications')
+      .insert({
+        title: input.title,
+        content: input.content,
+        level: input.level,
+        recipient_type: input.recipientType,
+        target_id: input.targetId ? Number(input.targetId) : null,
+        scheduled_at: input.scheduledAt,
+        is_sent: false,
+        created_by: numOrNull(me?.memberId),
+      });
+
+    if (error) return { success: false, message: friendlyError(error) };
+    return { success: true };
+  }
+
+  async deleteScheduledNotification(id: string): Promise<{ success: boolean; message?: string }> {
+    const { error } = await this.supabase
+      .from('scheduled_notifications')
+      .delete()
+      .eq('id', Number(id));
+
+    if (error) return { success: false, message: friendlyError(error) };
+    return { success: true };
+  }
+
+  async dispatchScheduledNotifications(): Promise<{ count: number }> {
+    const { data, error } = await this.supabase.rpc('dispatch_scheduled_notifications');
+    if (error) return { count: 0 };
+    return { count: Number(data ?? 0) };
+  }
+
+  async reviewMemberRegistration(input: {
+    memberId: string;
+    action: 'approve' | 'reject';
+    rejectionReason?: string;
+  }): Promise<{ success: boolean; message?: string }> {
+    const me = await this.getCurrentUser();
+
+    if (input.action === 'approve') {
+      const { error } = await this.supabase
+        .from('members')
+        .update({ approval_status: 'approved', rejection_reason: null })
+        .eq('id', Number(input.memberId));
+
+      if (error) return { success: false, message: friendlyError(error) };
+
+      // Ghi audit log
+      await this.supabase.from('audit_logs').insert({
+        actor_id: numOrNull(me?.memberId),
+        actor_role: me?.role || 'unit_secretary',
+        action: 'APPROVE_MEMBER',
+        table_name: 'members',
+        row_id: Number(input.memberId),
+        new_value: 'Bí thư chi đoàn duyệt chính thức đoàn viên tự đăng ký',
+      });
+
+      return { success: true };
+    } else {
+      // Bắt buộc có lý do từ chối
+      if (!input.rejectionReason?.trim()) {
+        return { success: false, message: 'Vui lòng nêu rõ lý do từ chối hồ sơ' };
+      }
+
+      // Ghi audit log trước khi xóa
+      await this.supabase.from('audit_logs').insert({
+        actor_id: numOrNull(me?.memberId),
+        actor_role: me?.role || 'unit_secretary',
+        action: 'REJECT_MEMBER',
+        table_name: 'members',
+        row_id: Number(input.memberId),
+        old_value: `Từ chối với lý do: ${input.rejectionReason.trim()}`,
+      });
+
+      // Xóa hồ sơ không phải của chi đoàn
+      const { error } = await this.supabase
+        .from('members')
+        .delete()
+        .eq('id', Number(input.memberId));
+
+      if (error) return { success: false, message: friendlyError(error) };
+      return { success: true };
+    }
+  }
+
+  async toggleMemberNewlyAdmitted(memberId: string, isNewlyAdmitted: boolean): Promise<{ success: boolean; message?: string }> {
+    const { error } = await this.supabase
+      .from('members')
+      .update({ is_newly_admitted: isNewlyAdmitted })
+      .eq('id', Number(memberId));
+
+    if (error) return { success: false, message: friendlyError(error) };
+    return { success: true };
+  }
+
+  async resetFactoryData(confirmationText: string): Promise<{ success: boolean; message?: string }> {
+    const { data, error } = await this.supabase.rpc('reset_factory_data', {
+      p_confirmation: confirmationText,
+    });
+
+    if (error) return { success: false, message: friendlyError(error) };
+    const res = (data ?? {}) as Row;
+    return { success: !!res.success, message: res.message };
   }
 }
 

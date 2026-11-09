@@ -100,7 +100,7 @@ export const FeedPage: React.FC = () => {
             ] as const).map(f => (
               <button
                 key={f.key}
-                type="button"
+                type="button" title="Lọc nhiệm vụ"
                 onClick={() => setStatusFilter(f.key)}
                 className={`px-3 py-1.5 text-xs font-bold rounded-lg ${
                   statusFilter === f.key ? 'bg-[#1F5FBF] text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
@@ -192,7 +192,7 @@ export const FeedPage: React.FC = () => {
                   {/* Đoàn viên: nút tham gia/từ chối */}
                   {!isSecretary && (
                     <div className="flex flex-col items-end gap-1.5 shrink-0">
-                      <button
+                      <button title="Hoàn thành"
                         type="button"
                         disabled={busyId === task.id}
                         onClick={() => handleRegister(task.id, true)}
@@ -210,7 +210,7 @@ export const FeedPage: React.FC = () => {
                         <Upload className="w-3.5 h-3.5" />
                         {mySubmission ? 'Xem / nộp lại' : 'Nộp minh chứng'}
                       </Link>
-                      <button
+                      <button title="Hủy bỏ"
                         type="button"
                         disabled={busyId === task.id}
                         onClick={() => handleRegister(task.id, false)}

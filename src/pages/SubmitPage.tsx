@@ -121,9 +121,13 @@ export const SubmitPage: React.FC = () => {
       if (!file) return;
       setBusy(true);
       let lat: number | null = null, lng: number | null = null;
+      let accuracy: number | null = null;
+      let coordSource: 'gps' | null = null;
       try {
         const pos = await getGpsPosition();
         lat = pos.lat; lng = pos.lng;
+        accuracy = pos.accuracy ?? null;
+        coordSource = 'gps';
       } catch (e) {
         showToast({ title: 'Không lấy được GPS', description: e instanceof Error ? e.message : '', type: 'info' });
       }
@@ -131,6 +135,7 @@ export const SubmitPage: React.FC = () => {
       setPhotos(prev => [...prev, {
         evidenceType: 'photo', url: up.url, storagePath: up.storagePath, fileName: file.name,
         fileHash: hash, lat, lng, source, label: file.name,
+        accuracyM: accuracy, coordSource,
       }]);
       showToast({ title: 'Đã thêm ảnh minh chứng', type: 'success' });
     } catch (e) {
@@ -369,11 +374,11 @@ export const SubmitPage: React.FC = () => {
                     <ImagePlus className="w-3.5 h-3.5" /> Ảnh minh chứng ({photos.length}/{maxPhotos})
                   </span>
                   <div className="flex items-center gap-2">
-                    <button type="button" disabled={busy || photos.length >= maxPhotos} onClick={() => addPhoto('upload')}
+                    <button title="Chọn ảnh" type="button" disabled={busy || photos.length >= maxPhotos} onClick={() => addPhoto('upload')}
                       className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-bold text-white bg-[#1F5FBF] rounded-lg disabled:opacity-50">
                       <ImagePlus className="w-3.5 h-3.5" /> Chọn ảnh
                     </button>
-                    <button type="button" disabled={busy || photos.length >= maxPhotos} onClick={() => addPhoto('camera')}
+                    <button title="Chụp ảnh" type="button" disabled={busy || photos.length >= maxPhotos} onClick={() => addPhoto('camera')}
                       className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-bold text-slate-700 bg-white border border-slate-300 rounded-lg disabled:opacity-50">
                       <Camera className="w-3.5 h-3.5" /> Chụp ảnh
                     </button>
@@ -384,7 +389,7 @@ export const SubmitPage: React.FC = () => {
                     {photos.map((ev, i) => (
                       <div key={i} className="relative border border-slate-200 rounded-lg overflow-hidden bg-white">
                         <img src={ev.url} alt={ev.label} className="w-full h-24 object-cover" />
-                        <button type="button" onClick={() => setPhotos(prev => prev.filter((_, j) => j !== i))}
+                        <button title="Đóng" type="button" onClick={() => setPhotos(prev => prev.filter((_, j) => j !== i))}
                           className="absolute top-1 right-1 bg-white/90 rounded-full p-0.5 text-rose-600"><X className="w-3.5 h-3.5" /></button>
                         <div className="p-1.5 space-y-0.5">
                           {ev.lat !== null && ev.lng !== null ? (
@@ -408,7 +413,7 @@ export const SubmitPage: React.FC = () => {
                   <span className="font-bold text-slate-800 flex items-center gap-1.5">
                     <FileUp className="w-3.5 h-3.5" /> Tệp minh chứng ({files.length}/{maxFiles})
                   </span>
-                  <button type="button" disabled={busy || files.length >= maxFiles} onClick={addFile}
+                  <button title="Chọn tệp" type="button" disabled={busy || files.length >= maxFiles} onClick={addFile}
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-bold text-slate-700 bg-white border border-slate-300 rounded-lg disabled:opacity-50">
                     <FileUp className="w-3.5 h-3.5" /> Chọn tệp
                   </button>
@@ -418,7 +423,7 @@ export const SubmitPage: React.FC = () => {
                     {files.map((ev, i) => (
                       <div key={i} className="flex items-center justify-between bg-white border border-slate-200 rounded-lg px-2 py-1.5">
                         <span className="text-[11px] text-slate-700 flex items-center gap-1.5 truncate"><FileText className="w-3.5 h-3.5 shrink-0" /> {ev.label}</span>
-                        <button type="button" onClick={() => setFiles(prev => prev.filter((_, j) => j !== i))} className="text-rose-600"><X className="w-3.5 h-3.5" /></button>
+                        <button title="Đóng" type="button" onClick={() => setFiles(prev => prev.filter((_, j) => j !== i))} className="text-rose-600"><X className="w-3.5 h-3.5" /></button>
                       </div>
                     ))}
                   </div>
@@ -447,8 +452,8 @@ export const SubmitPage: React.FC = () => {
               </div>
 
               <div className="flex items-center justify-between pt-3 border-t border-slate-100">
-                <button type="button" onClick={resetForm} className="px-3 py-2 text-xs font-semibold text-slate-600 bg-slate-100 rounded-lg">Huỷ</button>
-                <button type="button" disabled={busy} onClick={handleSubmit}
+                <button title="Huỷ" type="button" onClick={resetForm} className="px-3 py-2 text-xs font-semibold text-slate-600 bg-slate-100 rounded-lg">Huỷ</button>
+                <button title="Nộp minh chứng" type="button" disabled={busy} onClick={handleSubmit}
                   className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg disabled:opacity-60">
                   {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
                   Nộp minh chứng

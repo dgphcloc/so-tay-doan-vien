@@ -120,7 +120,7 @@ export const ImportCriteriaModal: React.FC<Props> = ({ open, onClose, onImported
             </h3>
             <p className="text-xs text-slate-500">Bước {step}/3</p>
           </div>
-          <button type="button" onClick={handleClose} className="text-slate-400 hover:text-slate-600 cursor-pointer">
+          <button title="Đóng" type="button" onClick={handleClose} className="text-slate-400 hover:text-slate-600 cursor-pointer">
             <X className="w-5 h-5" />
           </button>
         </div>
@@ -163,7 +163,7 @@ export const ImportCriteriaModal: React.FC<Props> = ({ open, onClose, onImported
                   e.target.value = '';
                 }}
               />
-              <button
+              <button title="Tải lên"
                 type="button"
                 disabled={parsing}
                 onClick={() => fileInputRef.current?.click()}
@@ -284,7 +284,7 @@ export const ImportCriteriaModal: React.FC<Props> = ({ open, onClose, onImported
 
         {/* Footer */}
         <div className="p-4 border-t border-slate-200 flex items-center justify-between bg-slate-50">
-          <button
+          <button title="Hủy"
             type="button"
             onClick={handleClose}
             className="px-3 py-2 text-xs font-semibold text-slate-600 bg-white border border-slate-300 rounded-lg cursor-pointer"
@@ -293,7 +293,7 @@ export const ImportCriteriaModal: React.FC<Props> = ({ open, onClose, onImported
           </button>
           <div className="flex items-center gap-2">
             {step === 2 && (
-              <button
+              <button title="Tiếp tục"
                 type="button"
                 onClick={() => setStep(3)}
                 className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-[#1F5FBF] hover:bg-[#154690] rounded-lg cursor-pointer"
@@ -303,14 +303,14 @@ export const ImportCriteriaModal: React.FC<Props> = ({ open, onClose, onImported
             )}
             {step === 3 && (
               <>
-                <button
+                <button title="Quay lại"
                   type="button"
                   onClick={() => setStep(2)}
                   className="px-3 py-2 text-xs font-semibold text-slate-600 bg-white border border-slate-300 rounded-lg cursor-pointer"
                 >
                   Quay lại
                 </button>
-                <button
+                <button title="Hoàn thành"
                   type="button"
                   disabled={applying}
                   onClick={handleApply}

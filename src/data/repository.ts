@@ -16,6 +16,7 @@ import {
   DbTaskSubCriterion,
   DbTaskResult,
   DbMemberSubmission,
+  DbUnitReport,
   DbJournalEntry,
   DbEvidence,
   DbNotification,
@@ -35,6 +36,21 @@ import {
   ReportType,
   ReviewStatus,
   EvidenceType,
+  DbEvaluationPeriod,
+  DbMemberRldvLevel,
+  DbMemberDiscipline,
+  DbMemberEvaluation,
+  DbUnitEvaluation,
+  PeriodType,
+  PeriodStatus,
+  RatingLevel,
+  DisciplineForm,
+  DbUnionFeeSettings,
+  DbUnionFeePayment,
+  DbUnitFeeDistribution,
+  FeePaymentMethod,
+  FeePaymentStatus,
+  DbScheduledNotification,
 } from './types';
 
 /** Minh chứng gửi kèm khi nộp bài. */
@@ -51,6 +67,10 @@ export interface EvidenceInput {
   lat: number | null;
   lng: number | null;
   source: 'camera' | 'upload';
+  /** Sai số GPS do thiết bị báo về (mét). Chỉ ảnh chụp mới có. */
+  accuracyM?: number | null;
+  /** Nguồn toạ độ: thiết bị / nhập tay / dán link Maps. */
+  coordSource?: 'gps' | 'manual' | 'link' | null;
 }
 
 export interface Repository {
@@ -163,6 +183,61 @@ export interface Repository {
   reviewMemberSubmission(id: string, approve: boolean, note?: string): Promise<{ success: boolean; message?: string }>;
   /** Minh chứng đính kèm của một bài nộp cá nhân. */
   listMemberSubmissionEvidences(submissionId: string): Promise<DbEvidence[]>;
+
+  // 0d. Báo cáo riêng của Bí thư chi đoàn (tách biệt với kết quả chi đoàn)
+  /**
+   * Danh sách báo cáo của bí thư chi đoàn.
+   * RLS tự giới hạn: bí thư chỉ thấy đơn vị mình, bí thư xã thấy tất cả.
+   */
+  listUnitReports(filters?: {
+    taskId?: string;
+    unitId?: string;
+    status?: ReviewStatus;
+  }): Promise<DbUnitReport[]>;
+  /** Bí thư / phó bí thư nộp báo cáo cho nhiệm vụ của chi đoàn mình. */
+  submitUnitReport(input: {
+    taskId: string;
+    note?: string;
+    evidences: EvidenceInput[];
+  }): Promise<{ success: boolean; message?: string; reportId?: string }>;
+  /** Bí thư xã / admin duyệt hoặc từ chối báo cáo. */
+  reviewUnitReport(id: string, approve: boolean, note?: string): Promise<{ success: boolean; message?: string }>;
+  /** Minh chứng đính kèm của một báo cáo chi đoàn. */
+  listUnitReportEvidences(reportId: string): Promise<DbEvidence[]>;
+
+  // 0e. Tạo tài khoản đăng nhập cho đoàn viên (chỉ admin)
+  /**
+   * Tạo tài khoản đăng nhập cho MỘT đoàn viên.
+   * Cần Edge Function `admin-create-member-account` đã deploy, vì tạo user
+   * trong auth.users đòi service_role key — không được có ở trình duyệt.
+   */
+  createMemberAccount(input: {
+    email: string;
+    password?: string;
+    memberId: string;
+    fullName: string;
+    roleId?: string;
+  }): Promise<{ ok: boolean; email?: string; message?: string }>;
+
+  /**
+   * Tạo tài khoản hàng loạt cho các đoàn viên CHƯA có tài khoản.
+   * Email sinh tự động: `<ten-khong-dau><id>@<emailDomain>`.
+   * Mật khẩu chung, mặc định `DoanVien@2026`.
+   */
+  bulkCreateMemberAccounts(input: {
+    members: Array<{ memberId: string; fullName: string; unitId: string; unitName: string }>;
+    emailDomain: string;
+    password?: string;
+    roleId?: string;
+  }): Promise<{
+    ok: boolean;
+    created?: number;
+    failed?: number;
+    skipped?: number;
+    defaultPassword?: string;
+    results?: Array<{ memberId: number; fullName: string; email: string; ok: boolean; message?: string }>;
+    message?: string;
+  }>;
   /** Ai đã tham gia / đã nộp / chưa nộp trong một chi đoàn cho một nhiệm vụ. */
   listTaskParticipants(taskId: string, unitId: string): Promise<Array<{
     member: DbMember;
@@ -194,6 +269,25 @@ export interface Repository {
   // 1. Dashboard & Thống kê tính toán
   getDashboard(year: number): Promise<DashboardStats>;
   calculateUnitScores(year?: number): Promise<UnitScoreCalculation[]>;
+  /**
+   * Tiến độ các tiêu chí (KPI) Đoàn xã giao cho một chi đoàn:
+   * tổng nhiệm vụ đã tạo / đã duyệt / đang chờ, theo từng tiêu chí con.
+   */
+  getUnitCriterionProgress(unitId: string): Promise<Array<{
+    subCriterionId: string;
+    criterionName: string;
+    subName: string;
+    maxScore: number;
+    totalTasks: number;
+    doneTasks: number;
+    pendingTasks: number;
+  }>>;
+  /** Danh sách nhiệm vụ được tạo từ một tiêu chí con (dùng ở panel chi tiết tiêu chí). */
+  listTasksBySubCriterion(subCriterionId: string): Promise<Array<{
+    task: DbTask;
+    results: DbTaskResult[];
+    unitName: string;
+  }>>;
 
   // 2. Phê duyệt (Duyệt kết quả nhiệm vụ & tiêu chí)
   listPendingReviews(
@@ -243,6 +337,11 @@ export interface Repository {
     unitIds: string[];
     subCriteriaContributions: Array<{ sub_criterion_id: string; contribution_score: number }>;
   }): Promise<DbTask>;
+  updateTask(input: {
+    taskId: string;
+    taskData: Partial<DbTask>;
+    unitIds?: string[];
+  }): Promise<{ success: boolean; message?: string }>;
   publishTask(id: string): Promise<{ success: boolean; message?: string }>;
   closeTask(id: string): Promise<{ success: boolean; message?: string }>;
   deleteTask(id: string): Promise<{ success: boolean; message?: string }>;
@@ -255,6 +354,8 @@ export interface Repository {
   countUnitsWithoutResult(taskId: string): Promise<{ assigned: number; submitted: number; missing: string[] }>;
   /** Duyệt tất cả bài nộp cá nhân đang chờ duyệt của một nhiệm vụ. */
   approveAllMemberSubmissions(taskId: string): Promise<{ success: boolean; approved: number; message?: string }>;
+  /** Duyệt hàng loạt kết quả nhiệm vụ (nút "Duyệt tất cả" ở trang Chờ duyệt). */
+  bulkApproveTaskResults(ids: string[], note?: string): Promise<{ success: boolean; approved: number; message?: string }>;
 
   // 4. Chi đoàn (/chi-doan)
   listUnits(filters?: { unitTypeId?: UnitTypeId; search?: string; isActive?: boolean }): Promise<
@@ -310,7 +411,13 @@ export interface Repository {
   saveMember(
     input: (Omit<DbMember, 'id'> & { id?: string })
   ): Promise<{ success: boolean; message?: string; member?: DbMember }>;
-  deleteMember(id: string): Promise<{ success: boolean }>;
+  deleteMember(id: string): Promise<{ success: boolean; message?: string }>;
+  /**
+   * Bật/tắt trạng thái hoạt động của đoàn viên.
+   * Đây là cách ĐÚNG để "xóa" đoàn viên đã phát sinh dữ liệu: giữ nguyên lịch sử
+   * (điểm, minh chứng, đoàn phí) nhưng ẩn khỏi danh sách mặc định.
+   */
+  setMemberActive(id: string, active: boolean): Promise<{ success: boolean; message?: string }>;
   importMembers(rows: Array<Omit<DbMember, 'id'>>): Promise<{ importedCount: number }>;
 
   // 6. Ban chấp hành (/ban-chap-hanh, /bch)
@@ -331,6 +438,15 @@ export interface Repository {
     termStart: string;
   }): Promise<{ success: boolean; message?: string }>;
   endCommitteeTerm(id: string, endDate?: string): Promise<{ success: boolean }>;
+  /**
+   * Sửa chức vụ / tư cách thường vụ của một nhân sự đã có trong Ban Chấp hành.
+   * Ràng buộc: mỗi chi đoàn chỉ có 1 Bí thư đang giữ chức (DB cũng có unique index).
+   */
+  updateCommitteeMember(input: {
+    committeeId: string;
+    position: CommitteePosition;
+    isStanding: boolean;
+  }): Promise<{ success: boolean; message?: string }>;
 
   // 7. Tiêu chí (/tieu-chi)
   listCriteriaSets(year?: number): Promise<
@@ -424,6 +540,14 @@ export interface Repository {
     taskId?: string;
     subCriterionId?: string;
   }): Promise<{ sentCount: number; recipients: string[] }>;
+  /** Lấy danh sách thông báo riêng của người đang đăng nhập */
+  listMyNotifications(): Promise<DbNotification[]>;
+  /** Lấy tất cả thông báo hệ thống (dành cho Admin / Bí thư xã quản lý ở trang Nhắc nhở) */
+  listAllNotifications(limit?: number): Promise<DbNotification[]>;
+  /** Đánh dấu 1 thông báo là đã đọc (lưu vào Database) */
+  markNotificationAsRead(id: string): Promise<{ success: boolean }>;
+  /** Đánh dấu TẤT CẢ thông báo của mình là đã đọc (lưu vào Database) */
+  markAllNotificationsAsRead(): Promise<{ success: boolean; count?: number }>;
 
   // 9. Báo cáo (/bao-cao)
   listReports(): Promise<DbReport[]>;
@@ -472,6 +596,188 @@ export interface Repository {
     }>
   >;
 
+  // 13. Đánh giá, xếp loại hằng năm (/danh-gia)
+  listEvaluationPeriods(): Promise<DbEvaluationPeriod[]>;
+  saveEvaluationPeriod(input: {
+    year: number;
+    periodType: PeriodType;
+    name: string;
+  }): Promise<{ success: boolean; message?: string; period?: DbEvaluationPeriod }>;
+  setEvaluationPeriodStatus(id: string, status: PeriodStatus): Promise<{ success: boolean; message?: string }>;
+
+  listMemberRldvLevels(year: number): Promise<DbMemberRldvLevel[]>;
+  saveMemberRldvLevel(input: {
+    memberId: string;
+    year: number;
+    level: RatingLevel;
+    note?: string;
+  }): Promise<{ success: boolean; message?: string }>;
+
+  listMemberDisciplines(filters?: { memberId?: string; year?: number }): Promise<DbMemberDiscipline[]>;
+  saveMemberDiscipline(input: {
+    id?: string;
+    memberId: string;
+    decisionNo: string;
+    form: DisciplineForm;
+    decidedAt: string;
+    effectiveFrom?: string | null;
+    effectiveTo?: string | null;
+    reason?: string;
+  }): Promise<{ success: boolean; message?: string }>;
+  deleteMemberDiscipline(id: string): Promise<{ success: boolean; message?: string }>;
+
+  listMemberEvaluations(periodId: string): Promise<DbMemberEvaluation[]>;
+  /**
+   * Sinh / làm mới phiếu đánh giá cho toàn bộ đoàn viên trong kỳ.
+   * Chỉ tạo phiếu chưa có; phiếu đã có giữ nguyên (trừ khi `recompute` = true).
+   */
+  generateMemberEvaluations(periodId: string, options?: { recompute?: boolean }): Promise<{
+    success: boolean; created: number; updated: number; message?: string;
+  }>;
+  saveMemberEvaluationResponse(input: {
+    evaluationId: string;
+    response: 'confirmed' | 'disagreed';
+    feedback?: string;
+  }): Promise<{ success: boolean; message?: string }>;
+  reviewMemberEvaluation(input: {
+    evaluationId: string;
+    rating: RatingLevel;
+    note?: string;
+  }): Promise<{ success: boolean; message?: string }>;
+  finalizeMemberEvaluation(input: {
+    evaluationId: string;
+    rating: RatingLevel;
+    note?: string;
+  }): Promise<{ success: boolean; message?: string }>;
+
+  listUnitEvaluations(periodId: string): Promise<DbUnitEvaluation[]>;
+  generateUnitEvaluations(periodId: string): Promise<{ success: boolean; created: number; updated: number; message?: string }>;
+  finalizeUnitEvaluation(input: {
+    unitEvaluationId: string;
+    rating: RatingLevel;
+    meetingOk: boolean;
+    feeOk: boolean;
+    hasDiscipline: boolean;
+    note?: string;
+  }): Promise<{ success: boolean; message?: string }>;
+
+  // 14. Thu nộp & Quản lý Đoàn phí (/doan-phi)
+  getUnionFeeSettings(): Promise<DbUnionFeeSettings>;
+  updateUnionFeeSettings(updates: Partial<DbUnionFeeSettings>): Promise<{ success: boolean; message?: string }>;
+
+  listUnionFeePayments(filters?: {
+    memberId?: string;
+    unitId?: string;
+    year?: number;
+    status?: FeePaymentStatus;
+  }): Promise<DbUnionFeePayment[]>;
+
+  createUnionFeePayment(input: {
+    memberId: string;
+    unitId: string;
+    year: number;
+    months: number[];
+    amount: number;
+    paymentMethod: FeePaymentMethod;
+    orderCode?: number | null;
+    evidenceUrl?: string;
+    note?: string;
+  }): Promise<{ success: boolean; message?: string; paymentId?: string }>;
+
+  reviewUnionFeePayment(input: {
+    paymentId: string;
+    status: 'approved' | 'rejected';
+    note?: string;
+  }): Promise<{ success: boolean; message?: string }>;
+
+  confirmPayOsPayment(orderCode: number, amount: number): Promise<{ success: boolean; message?: string }>;
+  /**
+   * Gọi Edge Function `payos-create-payment` để tạo link VietQR chính thức từ payOS.
+   * Trả về checkoutUrl / qrCode / bin / accountNumber do payOS cấp.
+   */
+  createPayOsPaymentLink(input: {
+    orderCode: number;
+    amount: number;
+    description: string;
+    buyerName?: string;
+    buyerPhone?: string;
+    expiresInMinutes?: number;
+  }): Promise<{
+    success: boolean;
+    message?: string;
+    paymentLinkId?: string;
+    checkoutUrl?: string;
+    qrCode?: string;
+    bin?: string;
+    accountNumber?: string;
+    accountName?: string;
+    amount?: number;
+    description?: string;
+    orderCode?: number;
+    expiredAt?: number;
+    status?: string;
+  }>;
+  /**
+   * Gọi Edge Function `payos-create-payment` action=status để kiểm tra
+   * trạng thái thanh toán (PENDING | PAID | CANCELLED | EXPIRED).
+   */
+  checkPayOsPaymentStatus(orderCode: number): Promise<{
+    success: boolean;
+    message?: string;
+    status?: string;
+    amount?: number;
+    amountPaid?: number;
+    amountRemaining?: number;
+    transactions?: Array<{ reference: string; amount: number; transactionDateTime: string }>;
+  }>;
+
+  updateMemberFeeStatus(input: {
+    memberId: string;
+    hasSalary?: boolean;
+    exemptMonths?: number[];
+    transferredOutMonth?: number | null;
+  }): Promise<{ success: boolean; message?: string }>;
+
+  listUnitFeeDistributions(year: number): Promise<DbUnitFeeDistribution[]>;
+  generateUnitFeeDistributions(year: number): Promise<{ success: boolean; count: number; message?: string }>;
+  markFeeDistributionRefunded(input: {
+    distributionId: string;
+    receiptNo?: string;
+    note?: string;
+  }): Promise<{ success: boolean; message?: string }>;
+
+  sendUnionFeeReminder(input: {
+    recipientType: 'member' | 'unit' | 'all_unpaid';
+    memberId?: string;
+    unitId?: string;
+    year: number;
+    month?: number;
+  }): Promise<{ success: boolean; count: number; message?: string }>;
+
+  // 15. Lên lịch thông báo tự động (Scheduled Notifications)
+  listScheduledNotifications(): Promise<DbScheduledNotification[]>;
+  createScheduledNotification(input: {
+    title: string;
+    content: string;
+    level: 'yellow' | 'orange' | 'red';
+    recipientType: 'unit' | 'member' | 'all';
+    targetId?: string;
+    scheduledAt: string;
+  }): Promise<{ success: boolean; message?: string }>;
+  deleteScheduledNotification(id: string): Promise<{ success: boolean; message?: string }>;
+  dispatchScheduledNotifications(): Promise<{ count: number }>;
+
+  // 16. Phê duyệt đoàn viên tự đăng ký Google & Chỉ tiêu đoàn viên mới
+  reviewMemberRegistration(input: {
+    memberId: string;
+    action: 'approve' | 'reject';
+    rejectionReason?: string;
+  }): Promise<{ success: boolean; message?: string }>;
+  toggleMemberNewlyAdmitted(memberId: string, isNewlyAdmitted: boolean): Promise<{ success: boolean; message?: string }>;
+
+  // 17. Khôi phục cài đặt gốc / Bàn giao phần mềm mới
+  resetFactoryData(confirmationText: string): Promise<{ success: boolean; message?: string }>;
+
   // Raw read access for synchronizing UI state with reactive context
   getRawSnapshot(): Promise<{
     roles: DbRole[];
@@ -491,6 +797,7 @@ export interface Repository {
     taskSubCriteria: DbTaskSubCriterion[];
     taskResults: DbTaskResult[];
     memberSubmissions: DbMemberSubmission[];
+    unitReports: DbUnitReport[];
     evidences: DbEvidence[];
     notifications: DbNotification[];
     warnings: DbWarning[];

@@ -631,3 +631,132 @@ Không có dấu `/` ở cuối.
 
 ### Cài đặt
 `npm install jsqr` gặp xung đột peer dependency có sẵn của project (`esbuild ^0.25.0` vs vite 8 đòi `^0.27||^0.28`) — **không liên quan tới jsqr**. Đã cài bằng `--legacy-peer-deps`. Nếu cài lại từ đầu cần dùng cùng cờ này, hoặc nâng `esbuild` trong devDependencies.
+
+---
+
+## 23. Import Excel thông minh + Quản lý Đoàn viên ưu tú (2026-10-22)
+
+### 1. Nâng cấp Import Excel đoàn viên (`membersImport.ts`):
+- **Tương thích file thực tế:** Đọc mượt mà cả file mẫu chuẩn lẫn file thực tế 2 tầng header gộp (như `du_lieu_doan_vien_mau.xlsx` - 997 dòng).
+- **Tự sửa lỗi ngày tháng học vấn:** Nhận diện và sửa tự động lỗi Excel tự ép `12/12` thành ngày `2026-12-12`.
+- **Tự đoán giới tính:** Tự động suy đoán Nam/Nữ qua tên đệm (Văn/Thị) nếu file không có cột Giới tính.
+- **Tự động nhận diện & tạo Chi đoàn mới:** Phát hiện các Chi đoàn chưa có trong hệ thống (như `CĐ Bệnh viện đa khoa Hòa Bình`, `CĐ Béc Hen`...), hiển thị danh sách cảnh báo ở Bước 3 & Bước 4 và **tự động tạo mới** khi xác nhận.
+- **Ánh xạ chức vụ thông minh:** Nhận diện `BTCĐ` -> Bí thư, `phó BTCĐ` -> Phó Bí thư, còn lại -> Đoàn viên.
+- **Chuẩn hóa dân tộc:** `Kh-mer` -> `Khmer`.
+
+### 2. File mẫu Excel chuẩn (`memberTemplate.ts`):
+- Nút **"Tải file Excel mẫu chuẩn (.xlsx)"** ngay tại Bước 1 của Modal Import.
+- Header chuẩn 1 dòng, 3 dòng dữ liệu mẫu sinh động, định dạng ô chuẩn.
+- Có sẵn **Data Validation (Dropdown list)** lấy động danh sách các Chi đoàn hiện có trong DB để người dùng chọn trực tiếp trong Excel.
+
+### 3. Quản lý Đoàn viên ưu tú & Phát triển Đảng (`phase6_elite_members.sql`):
+- Thêm trường `is_elite_member` (boolean), `elite_date` (date), `party_target_status` (`none`, `elite`, `trained_class`, `introduced`, `admitted`).
+- Huy hiệu **★ Ưu tú** hiển thị cạnh họ tên trong danh sách đoàn viên.
+- Bộ lọc `partyFilter` trong `MembersPage` bổ sung tùy chọn: **"Đoàn viên ưu tú (★)"**.
+- Drawer chi tiết và Form Thêm/Sửa đoàn viên có đầy đủ trường chọn: Công nhận ưu tú, Ngày công nhận, Giai đoạn phát triển Đảng (Cảm tình Đảng, Giới thiệu Chi bộ, Đã kết nạp).
+- Xuất file Excel danh sách đoàn viên bổ sung cột **ĐV Ưu tú**.
+
+---
+
+## 24. Sửa lỗi Import Đoàn viên & Thêm Phân trang + Checkbox chọn dòng (2026-10-22)
+
+### 1. Nguyên nhân cốt lõi khiến 0 đoàn viên được thêm vào trước đó:
+1. **Lỗi Type Casting cột `education_grade`:**
+   - Database khai báo `education_grade smallint check (education_grade between 1 and 12)`.
+   - Code trước đó gửi chuỗi text `'12/12'` -> Postgres ném lỗi: `invalid input syntax for type smallint: "12/12"`.
+   - **Đã sửa:** Tự động trích xuất số nguyên từ chuỗi (ví dụ: `'12/12'` -> số `12`, `'9/12'` -> số `9`).
+2. **Đồng bộ ID Chi đoàn mới tạo:**
+   - Trước đó dùng state `units` trong React (bị trễ render), dẫn đến các chi đoàn mới vừa tạo không tìm thấy ID trong map -> rơi vào fallback `units[0].id` (`Chi đoàn ấp 1`).
+   - `Chi đoàn ấp 1` đã có Bí thư -> RPC `members_import` chặn với lỗi: `"Chi đoàn này đã có bí thư đang hoạt động"`.
+   - **Đã sửa:** Sau khi tạo chi đoàn mới, truy vấn trực tiếp bảng `units` từ Supabase để lấy đúng 100% ID mới nhất gán cho từng đoàn viên.
+
+### 2. Bổ sung tính năng người dùng yêu cầu:
+- **Checkbox chọn nhiều dòng (Bước 3):**
+  - Mặc định: Tự động tick chọn toàn bộ các dòng hợp lệ.
+  - Có nút *"Chọn tất cả hợp lệ"* và *"Bỏ chọn"*.
+  - Cho phép người dùng tick / bỏ tick từng đoàn viên theo nhu cầu.
+  - Chỉ những dòng được tick chọn mới được nhập vào hệ thống.
+- **Phân trang (Bước 3):**
+  - Phân trang 15 dòng / trang kèm nút `< Trước`, `Sau >` và chỉ số `Trang X / Y`, giúp xem trước mượt mà với danh sách hàng trăm dòng mà không bị giật lag giao diện.
+
+---
+
+## 25. Mở rộng tính năng Xuất/Nhập Excel cho toàn bộ các module (2026-10-22)
+
+Áp dụng chuẩn hóa Excel 2 chiều (Xuất + Nhập đối soát + Tải file mẫu chuẩn) cho 4 module:
+
+### 1. Module Chi đoàn (`UnitsPage.tsx` + `unitsExcel.ts`):
+- **Xuất Excel:** Toàn bộ danh sách chi đoàn (Tên, Loại, Bí thư, Quân số khai báo, TN địa bàn, Trạng thái, Ghi chú).
+- **Tải file mẫu:** Có sẵn Data Validation Dropdown cho cột Loại chi đoàn và Trạng thái.
+- **Nhập từ Excel (Cập nhật đè):** Tự động nhận diện các chi đoàn đã có trong hệ thống để **cập nhật đè** số lượng đoàn viên, địa bàn, ghi chú theo file mới; các chi đoàn chưa có sẽ được **thêm mới**.
+
+### 2. Module Ban Chấp Hành (`CommitteePage.tsx` + `committeeExcel.ts`):
+- **Xuất Excel:** Danh sách nhân sự BCH theo cấp bộ đang chọn (BCH Đoàn xã hoặc từng Chi đoàn cụ thể).
+- **Tải file mẫu:** Có dropdown chọn Cấp bộ Đoàn, Chức vụ (Bí thư, Phó bí thư, UV BTV, UV BCH...), Ngày bắt đầu nhiệm kỳ.
+- **Nhập từ Excel:** Tự động đối soát và khớp với danh sách đoàn viên trong DB (báo lỗi nếu nhân sự chưa có hồ sơ đoàn viên).
+
+### 3. Module Tài khoản & Phân quyền (`AccountsPage.tsx` + `accountsExcel.ts`):
+- **Xuất Excel:** Danh sách tài khoản kèm vai trò và trạng thái hoạt động.
+- **Phân quyền bằng Excel (Nhập Excel):** Khớp theo email đăng nhập, tự động gán đè vai trò quản trị (Super Admin, Admin, Staff, Bí thư Chi đoàn, Đoàn viên) hàng loạt.
+
+### 4. Module Cấu hình Danh mục (`SettingsPage.tsx` + `settingsCatalogExcel.ts`):
+- **Xuất danh mục (Excel):** Xuất 2 sheet trong 1 file gồm: Sheet 1 `Loại chi đoàn` & Sheet 2 `Danh mục 54 Dân tộc`.
+- **Nhập Loại chi đoàn:** Tải file mẫu và nạp thêm các loại chi đoàn mới từ file Excel.
+
+---
+
+## 26. Sửa hiển thị Ban Chấp Hành & Thêm phân trang danh sách đoàn viên (2026-10-22)
+
+### 1. Sửa lỗi Ban Chấp Hành hiện số lượng nhưng không hiện thẻ:
+- **Nguyên nhân cốt lõi:** Khi nạp từ Supabase qua `unit_committees`, trường `member_id` trong DB là kiểu `number` (ví dụ `430`). Trong khi `members.id` là kiểu `string` (chuỗi `'430'`). Hàm tìm kiếm `getMemberById(comm.member_id)` dùng phép so sánh nghiêm ngặt `===` dẫn đến `'430' === 430` cho ra `false`, khiến `member` bị `undefined` và thẻ không render được.
+- **Đã sửa:**
+  1. Trong `src/data/index.ts`, map mảng `unitCommittees` qua `toCommittee` để chuẩn hóa `id`, `unit_id`, `member_id` thành kiểu chuỗi chuẩn `string`.
+  2. Trong `CommitteePage.tsx`, bổ sung fallback so sánh chuỗi `String(m.id) === String(comm.member_id)`. Toàn bộ 11 đồng chí trong BCH Đoàn xã và các cấp ủy chi đoàn hiển thị đầy đủ thẻ ngay lập tức.
+
+### 2. Thêm Phân trang Danh sách Đoàn viên (`MembersPage.tsx`):
+- Trước đây code hard-code `filteredMembers.slice(0, 30)` và không có thanh phân trang (dẫn tới có 611 đoàn viên nhưng chỉ xem được 30 người đầu).
+- **Đã nâng cấp:**
+  - Thêm state `currentPage` và `pageSize` (tùy chọn: 20, 25, 50, 100 đoàn viên/trang).
+  - Tự động quay về Trang 1 mỗi khi đổi từ khóa tìm kiếm hoặc đổi bất kỳ bộ lọc nào.
+  - Thanh phân trang chuyên nghiệp dưới chân bảng: Hiển thị khoảng dòng đang xem (ví dụ: `1 - 25 trong tổng 611`), nút Trang đầu (`«`), Trang trước (`‹`), hiển thị Trang X/Y, nút Trang sau (`›`), Trang cuối (`»`).
+
+---
+
+## 27. Hoàn thiện Thông báo Realtime & Đánh dấu đã đọc (2026-10-22)
+
+### 1. Vấn đề thực tế (như ảnh người dùng phản hồi):
+- Nút chuông thông báo hiện `1436 mới`.
+- Khi bấm "Đã đọc tất cả" thì trước đây chỉ đổi state tạm thời trên RAM (`setNotifications(...)`), không hề gọi API lưu xuống Supabase Database. Do đó khi F5 hoặc mở lại web thì 1436 thông báo vẫn hiện chưa đọc.
+- Bảng `notifications` trước đó không có RLS nên ai cũng nạp toàn bộ 1436 thông báo của tất cả mọi người trong xã (kể cả thông báo gửi cho các Bí thư chi đoàn khác).
+
+### 2. Giải pháp triệt để:
+1. **Migration `phase7_notifications_realtime.sql`:**
+   - Bật `supabase_realtime` cho bảng `notifications`.
+   - Bật RLS: Người dùng chỉ thấy thông báo gửi cho chính mình (`recipient_id = private.my_member_id()`). Admin thấy thông báo của mình và có quyền quản trị.
+   - RPC `mark_notification_read(id)`: Cập nhật `is_read = true`, `read_at = now()` vào Database.
+   - RPC `mark_all_notifications_read()`: Đánh dấu tất cả thông báo của người gọi thành đã đọc chỉ trong 1 truy vấn.
+   - RPC `my_notifications()`: Chỉ lấy danh sách thông báo gửi cho chính mình, sắp xếp mới nhất lên đầu, giới hạn 100 bản ghi.
+2. **Tầng dữ liệu (`supabaseRepository.ts` & `AppContext.tsx`):**
+   - Nạp thông báo qua `listMyNotifications()`.
+   - `markNotificationAsRead` và `markAllNotificationsAsRead`: Cập nhật lạc quan trên UI đồng thời gọi Database để lưu vĩnh viễn.
+   - **Realtime WebSocket (`supabase.channel('realtime_notifications')`):** Lắng nghe trực tiếp các sự kiện `INSERT`, `UPDATE`, `DELETE` trên bảng `notifications` tương ứng với `recipient_id`. Khi có thông báo mới (nhắc nhở, giao việc), chuông thông báo sẽ tự động nhảy số tức thì mà không cần F5!
+3. **Giao diện (`Navbar.tsx`):**
+   - Thêm nút tick (Check icon) bên cạnh từng thông báo để bấm đánh dấu đã đọc riêng từng mục.
+   - Nút "Đã đọc tất cả" hoạt động mượt mà và lưu vĩnh viễn vào DB.
+
+---
+
+## 28. Nâng cấp Tìm kiếm lời nhắc & Xem chi tiết thông báo dạng Modal (2026-10-22)
+
+1. **Tìm kiếm Đoàn viên thông minh trong Modal "Tạo Nhắc nhở Tùy biến" (`RemindersPage.tsx`):**
+   - Thay thẻ `<select>` cắt cụt 50 người bằng ô tìm kiếm tiếng Việt không dấu (`removeVietnameseTones`).
+   - Tìm kiếm linh hoạt theo: **Họ và tên**, **Số điện thoại**, hoặc **Tên Chi đoàn**.
+   - Tìm trên toàn bộ 631 đoàn viên thật của xã.
+
+2. **Dữ liệu Lịch sử Nhắc nhở kết nối THẬT với Database:**
+   - Thay 5 dòng mock data cứng bằng hàm `listAllNotifications(100)` đọc thật từ bảng `notifications` của Supabase.
+   - Bổ sung nút **"Xem"** trên từng dòng lịch sử để mở Modal chi tiết.
+
+3. **Mở Modal xem chi tiết thông báo (to rõ, dễ đọc):**
+   - **Ở Chuông thông báo trên thanh Navbar (`Navbar.tsx`):** Khi bấm vào thông báo trong danh sách trượt xuống, hệ thống tự động mở Modal xem chi tiết nội dung đầy đủ (kèm nút chuyển nhanh đến nhiệm vụ liên quan).
+   - **Ở Trang Nhắc nhở (`RemindersPage.tsx`):** Thêm modal xem đầy đủ nội dung, đối tượng nhận, chi đoàn và thời gian gửi.

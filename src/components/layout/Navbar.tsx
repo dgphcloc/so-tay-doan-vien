@@ -1,5 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { useApp } from '../../context/AppContext';
+import { Avatar } from '../common/Avatar';
 import { supabase, dataSource } from '../../data';
 import { RoleId } from '../../types';
 import {
@@ -15,7 +17,11 @@ import {
   FileCheck2,
   ExternalLink,
   LogOut,
+  X,
+  AlertCircle,
 } from 'lucide-react';
+import { formatDateTimeVN } from '../../mock/data';
+import type { Notification } from '../../types';
 import { Link, useNavigate } from 'react-router-dom';
 
 export const Navbar: React.FC = () => {
@@ -47,7 +53,7 @@ export const Navbar: React.FC = () => {
   // Tên hiển thị: ưu tiên hồ sơ đoàn viên gắn tài khoản, sau đó email, cuối cùng là "Người dùng"
   const displayName = currentMember?.full_name ?? currentUser?.email ?? 'Người dùng';
   const roleLabel = ROLE_LABEL[currentRole] ?? 'Người dùng';
-  const avatarUrl = currentMember?.avatar_url || `https://i.pravatar.cc/80?u=${currentUser?.profileId ?? 'guest'}`;
+  const avatarUrl = currentMember?.avatar_url ?? null;
   // Bí thư chi đoàn / đoàn viên: hiện thêm đang thuộc chi đoàn nào
   const myUnitName = currentMember
     ? (units.find(u => u.id === currentMember.unit_id)?.name ?? '')
@@ -56,6 +62,7 @@ export const Navbar: React.FC = () => {
 
   const navigate = useNavigate();
   const [showNotifications, setShowNotifications] = useState(false);
+  const [selectedNotifDetail, setSelectedNotifDetail] = useState<Notification | null>(null);
   const [showRoleMenu, setShowRoleMenu] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
 
@@ -126,8 +133,10 @@ export const Navbar: React.FC = () => {
 
         {/* Right Action Group */}
         <div className="flex items-center gap-2 md:gap-3 shrink-0">
-          {/* Quyền Demo Switcher — chỉ hiện ở chế độ mock (chưa đăng nhập thật) */}
-          {!currentUser && (
+          {/* Quyền Demo Switcher — chỉ hiện ở chế độ mock (chưa cấu hình Supabase).
+              Trước đây điều kiện là `!currentUser`, nên khi session Supabase còn
+              nhưng đọc bảng profiles lỗi thì thanh mô phỏng hiện nhầm trên app thật. */}
+          {dataSource === 'mock' && (
           <div className="relative" ref={roleRef}>
             <button
               type="button"
@@ -151,7 +160,7 @@ export const Navbar: React.FC = () => {
                 </div>
                 <div className="py-1">
                   {rolesConfig.map(r => (
-                    <button
+                    <button title="Xác nhận"
                       key={r.id}
                       type="button"
                       onClick={() => handleSelectRole(r.id)}
@@ -174,7 +183,7 @@ export const Navbar: React.FC = () => {
 
           {/* Notification Bell */}
           <div className="relative" ref={notifRef}>
-            <button
+            <button title="Xem thông báo"
               type="button"
               onClick={() => setShowNotifications(!showNotifications)}
               className="relative p-2 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
@@ -200,7 +209,7 @@ export const Navbar: React.FC = () => {
                     )}
                   </div>
                   {unreadCount > 0 && (
-                    <button
+                    <button title="Đã đọc tất cả"
                       type="button"
                       onClick={markAllNotificationsAsRead}
                       className="text-xs text-[#1F5FBF] hover:underline cursor-pointer font-medium"
@@ -222,6 +231,9 @@ export const Navbar: React.FC = () => {
                           if (n.type === 'review_request') {
                             setShowNotifications(false);
                             navigate('/duyet');
+                          } else {
+                            setSelectedNotifDetail(n);
+                            setShowNotifications(false);
                           }
                         }}
                         className={`p-3 hover:bg-slate-50 transition-colors cursor-pointer flex gap-3 ${
@@ -243,6 +255,19 @@ export const Navbar: React.FC = () => {
                           </p>
                           <p className="text-xs text-slate-500 mt-0.5 leading-snug line-clamp-2">{n.body}</p>
                         </div>
+                        {!n.is_read && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              markNotificationAsRead(n.id);
+                            }}
+                            className="shrink-0 p-1 text-slate-400 hover:text-[#1F5FBF] hover:bg-slate-100 rounded"
+                            title="Đánh dấu đã đọc"
+                          >
+                            <Check className="w-3.5 h-3.5" />
+                          </button>
+                        )}
                       </div>
                     ))
                   )}
@@ -266,16 +291,12 @@ export const Navbar: React.FC = () => {
 
           {/* User Profile */}
           <div className="relative" ref={userRef}>
-            <button
+            <button title="Mở rộng / Thu gọn"
               type="button"
               onClick={() => setShowUserMenu(!showUserMenu)}
               className="flex items-center gap-2 pl-2 pr-1 py-1 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer"
             >
-              <img
-                src={avatarUrl}
-                alt="Avatar"
-                className="w-8 h-8 rounded-full border border-blue-200 object-cover"
-              />
+              <Avatar src={avatarUrl} name={currentMember?.full_name} seed={currentUser?.profileId ?? currentMember?.id} size={32} ring />
               <div className="hidden md:flex flex-col text-left">
                 <span className="text-xs font-bold text-slate-800 leading-tight">{displayName}</span>
                 <span className="text-[11px] text-slate-500 truncate max-w-[10rem]">
@@ -316,9 +337,11 @@ export const Navbar: React.FC = () => {
                     Thiết lập hệ thống
                   </Link>
                 </div>
-                {dataSource === 'supabase' && supabase && (
+                {/* Chỉ cần có Supabase là luôn có đường đăng xuất — kể cả khi
+                    trạng thái đăng nhập đang lỗi, người dùng vẫn thoát ra được. */}
+                {supabase && (
                   <div className="pt-1 border-t border-slate-100">
-                    <button
+                    <button title="Đăng xuất"
                       type="button"
                       onClick={() => supabase?.auth.signOut()}
                       className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-red-600 hover:bg-red-50 rounded-md"
@@ -333,6 +356,73 @@ export const Navbar: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* MODAL: XEM CHI TIẾT THÔNG BÁO TỪ CHUÔNG — dùng createPortal để gắn trực tiếp vào body, không bị co lại trong header */}
+      {selectedNotifDetail && typeof document !== 'undefined' && createPortal(
+        <div className="fixed inset-0 z-[100] w-screen h-screen flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 animate-in fade-in">
+          <div className="bg-white rounded-2xl max-w-md w-full p-5 space-y-4 shadow-2xl border border-slate-200 text-xs animate-in zoom-in-95 duration-150">
+            <div className="flex items-start justify-between gap-3 pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <span
+                  className={`w-3 h-3 rounded-full shrink-0 ${
+                    selectedNotifDetail.level === 'red'
+                      ? 'bg-red-500 ring-4 ring-red-100'
+                      : selectedNotifDetail.level === 'orange'
+                      ? 'bg-orange-500 ring-4 ring-orange-100'
+                      : 'bg-blue-500 ring-4 ring-blue-100'
+                  }`}
+                />
+                <h3 className="text-sm font-bold text-slate-900 line-clamp-1">{selectedNotifDetail.title}</h3>
+              </div>
+              <button title="Đóng"
+                type="button"
+                onClick={() => setSelectedNotifDetail(null)}
+                className="p-1 rounded-full text-slate-400 hover:text-slate-600 hover:bg-slate-100 shrink-0 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <div className="flex items-center justify-between text-[11px] text-slate-500 bg-slate-50 p-2.5 rounded-lg border border-slate-200/80">
+                <span>Thời gian gửi:</span>
+                <span className="font-mono text-slate-700 font-semibold">{formatDateTimeVN(selectedNotifDetail.created_at)}</span>
+              </div>
+
+              <div>
+                <span className="text-[11px] font-bold text-slate-700 block mb-1">Nội dung thông báo:</span>
+                <div className="p-3.5 bg-blue-50/40 border border-blue-200/80 rounded-xl text-slate-800 leading-relaxed whitespace-pre-wrap font-medium max-h-60 overflow-y-auto">
+                  {selectedNotifDetail.body}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
+              {selectedNotifDetail.task_id && (
+                <button title="Xem nhiệm vụ"
+                  type="button"
+                  onClick={() => {
+                    const tId = selectedNotifDetail.task_id;
+                    setSelectedNotifDetail(null);
+                    navigate(currentRole === 'member' ? `/nop-ca-nhan?task=${tId}` : '/nhiem-vu');
+                  }}
+                  className="px-3 py-1.5 font-bold text-[#1F5FBF] bg-blue-50 hover:bg-blue-100 rounded-lg flex items-center gap-1 cursor-pointer"
+                >
+                  Xem nhiệm vụ <ExternalLink className="w-3.5 h-3.5" />
+                </button>
+              )}
+              <button title="Đóng"
+                type="button"
+                onClick={() => setSelectedNotifDetail(null)}
+                className="px-4 py-2 font-bold text-white bg-[#1F5FBF] hover:bg-[#154690] rounded-lg shadow-xs cursor-pointer"
+              >
+                Đóng
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
     </header>
   );
 };

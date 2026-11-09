@@ -252,7 +252,7 @@ export const ReportsPage: React.FC = () => {
         taskAssignedCount,
         completionRate,
       };
-    }).sort((a, b) => b.taskCount - a.taskCount);
+    }).sort((a, b) => b.completionRate - a.completionRate);
   }, [calculateUnitScores, taskScope, taskResults, taskUnits]);
 
   /** Tổng hợp theo nhiệm vụ: giao bao nhiêu chi đoàn, đã nộp, đã duyệt, tổng lượt ĐV. */
@@ -297,11 +297,12 @@ export const ReportsPage: React.FC = () => {
     ];
   }, [unitScoreList]);
 
-  // Bar chart top 10 units
+  // Bar chart top 10 units theo tỷ lệ hoàn thành
   const topUnitsChartData = useMemo(() => {
     return unitScoreList.slice(0, 10).map(u => ({
       name: u.unit.name.replace('Chi đoàn ', ''),
-      score: u.taskCount,
+      score: u.completionRate,
+      completed: u.taskCount,
       assigned: u.taskAssignedCount,
     }));
   }, [unitScoreList]);
@@ -337,7 +338,7 @@ export const ReportsPage: React.FC = () => {
           task: `${item.taskCount}/${item.taskAssignedCount}`,
           rate: `${item.completionRate}%`,
         })),
-        footerNote: 'Xếp hạng theo số nhiệm vụ đã được duyệt. Cột tỷ lệ để đối chiếu mức hoàn thành.',
+        footerNote: 'Xếp theo tỷ lệ hoàn thành nhiệm vụ được giao. Thang đo 100%.',
       });
       if (!opened) {
         showToast({ title: 'Trình duyệt chặn cửa sổ in', description: 'Hãy cho phép popup cho trang này rồi thử lại.', type: 'error' });
@@ -478,21 +479,21 @@ export const ReportsPage: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-2">
-          <button
+          <button title="Tải lại dữ liệu"
             type="button"
             onClick={refreshData}
             className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 rounded-lg shadow-2xs transition-all cursor-pointer"
           >
             <RefreshCw className="w-4 h-4 text-slate-500" /> Tải lại dữ liệu
           </button>
-          <button
+          <button title="Xuất PDF/Word"
             type="button"
             onClick={() => handleExportFile('PDF', 'Tong_hop_Cong_tac_Doan_2026.pdf')}
             className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 rounded-lg shadow-2xs transition-all cursor-pointer"
           >
             <Download className="w-4 h-4 text-slate-500" /> Xuất PDF/Word
           </button>
-          <button
+          <button title="Tạo báo cáo mới"
             type="button"
             onClick={() => {
               setStep(1);
@@ -507,7 +508,7 @@ export const ReportsPage: React.FC = () => {
 
       {/* TABS CHUYỂN ĐỔI: DANH SÁCH BÁO CÁO VS BẢNG XẾP LOẠI & BIỂU ĐỒ */}
       <div className="flex items-center gap-2 border-b border-slate-200">
-        <button
+        <button title="Danh sách Báo cáo đã lập ()"
           type="button"
           onClick={() => setActiveTab('reports_list')}
           className={`flex items-center gap-2 px-4 py-2.5 text-xs md:text-sm font-bold border-b-2 transition-all cursor-pointer ${
@@ -520,7 +521,7 @@ export const ReportsPage: React.FC = () => {
           <span>Danh sách Báo cáo đã lập ({reports.length})</span>
         </button>
 
-        <button
+        <button title="Thống kê Nhân sự"
           type="button"
           onClick={() => setActiveTab('personnel')}
           className={`flex items-center gap-2 px-4 py-2.5 text-xs md:text-sm font-bold border-b-2 transition-all cursor-pointer ${
@@ -533,7 +534,7 @@ export const ReportsPage: React.FC = () => {
           <span>Thống kê Nhân sự</span>
         </button>
 
-        <button
+        <button title="Mức độ Tham gia"
           type="button"
           onClick={() => setActiveTab('participation')}
           className={`flex items-center gap-2 px-4 py-2.5 text-xs md:text-sm font-bold border-b-2 transition-all cursor-pointer ${
@@ -546,7 +547,7 @@ export const ReportsPage: React.FC = () => {
           <span>Mức độ Tham gia</span>
         </button>
 
-        <button
+        <button title="Bảng Xếp loại Chi đoàn & Biểu đồ Phân bố"
           type="button"
           onClick={() => setActiveTab('ranking_dashboard')}
           className={`flex items-center gap-2 px-4 py-2.5 text-xs md:text-sm font-bold border-b-2 transition-all cursor-pointer ${
@@ -626,14 +627,14 @@ export const ReportsPage: React.FC = () => {
                         </td>
 
                         <td className="p-3.5 text-right whitespace-nowrap space-x-1">
-                          <button
+                          <button title="Xem chi tiết"
                             type="button"
                             onClick={() => setSelectedReport(rep)}
                             className="px-2.5 py-1 text-xs font-semibold text-[#1F5FBF] hover:bg-blue-50 rounded-md transition-colors cursor-pointer"
                           >
                             Xem chi tiết
                           </button>
-                          <button
+                          <button title="Tải PDF"
                             type="button"
                             onClick={() => handleExportFile('PDF', titleText)}
                             className="px-2.5 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-md transition-colors cursor-pointer"
@@ -688,7 +689,7 @@ export const ReportsPage: React.FC = () => {
                   Đoàn viên có ít nhất một bài nộp / tổng đoàn viên đang hoạt động.
                 </p>
               </div>
-              <button
+              <button title="Xuất Excel"
                 type="button"
                 onClick={async () => {
                   await exportExcel({
@@ -810,7 +811,7 @@ export const ReportsPage: React.FC = () => {
                   </h3>
                   <p className="text-xs text-slate-500 mt-0.5">Không bấm tham gia và không nộp bài nào</p>
                 </div>
-                <button
+                <button title="Xuất Excel"
                   type="button"
                   disabled={participationStats.neverJoined.length === 0}
                   onClick={async () => {
@@ -929,7 +930,7 @@ export const ReportsPage: React.FC = () => {
                   Đủ {yearlySettings.matured_age} tuổi trong 12 tháng tới — cần chuẩn bị chuyển sinh hoạt.
                 </p>
               </div>
-              <button
+              <button title="Xuất Excel"
                 type="button"
                 disabled={personnelStats.upcomingMatured.length === 0}
                 onClick={async () => {
@@ -1107,7 +1108,7 @@ export const ReportsPage: React.FC = () => {
               <div className="flex items-center justify-between pb-2 border-b border-slate-100">
                 <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
                   <TrendingUp className="w-4 h-4 text-[#1F5FBF]" />
-                  Top 10 Chi đoàn Dẫn đầu Điểm số Tích lũy
+                  Top 10 Chi đoàn Dẫn đầu Tỷ lệ Hoàn thành (%)
                 </h3>
               </div>
 
@@ -1121,9 +1122,12 @@ export const ReportsPage: React.FC = () => {
                       angle={-25}
                       textAnchor="end"
                     />
-                    <YAxis domain={[0, 100]} tick={{ fontSize: 11 }} />
+                    <YAxis domain={[0, 100]} tick={{ fontSize: 11 }} unit="%" />
                     <Tooltip
-                      formatter={(val: any) => [`${val ?? 0} điểm`, 'Tổng điểm']}
+                      formatter={(val: any, name: any, item: any) => [
+                        `${val ?? 0}% (${item.payload.completed}/${item.payload.assigned} việc)`,
+                        'Tỷ lệ hoàn thành',
+                      ]}
                     />
                     <Bar dataKey="score" fill="#1F5FBF" radius={[4, 4, 0, 0]} />
                   </BarChart>
@@ -1131,7 +1135,7 @@ export const ReportsPage: React.FC = () => {
               </div>
 
               <p className="text-[11px] text-slate-400 text-center">
-                Điểm số được tổng hợp tự động từ kết quả chấm Bộ tiêu chí và điểm đóng góp từ các nhiệm vụ đã hoàn thành.
+                Tỷ lệ hoàn thành = (Số nhiệm vụ đã hoàn thành / Tổng số nhiệm vụ được giao) × 100%.
               </p>
             </div>
           </div>
@@ -1148,7 +1152,7 @@ export const ReportsPage: React.FC = () => {
                 </p>
               </div>
 
-              <button
+              <button title="Xuất Excel"
                 type="button"
                 onClick={() => handleExportFile('Excel', `Bang_xep_loai_thi_dua_${yearlySettings.year}.xlsx`)}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg cursor-pointer transition-colors"
@@ -1180,9 +1184,11 @@ export const ReportsPage: React.FC = () => {
                     <th className="p-3">Chi đoàn cơ sở</th>
                     <th className="p-3 text-center">Đoàn viên</th>
                     <th className="p-3 text-center">
-                      Số nhiệm vụ <span className="text-[#1F5FBF]">↓</span>
+                      Số nhiệm vụ
                     </th>
-                    <th className="p-3 text-center">Tỷ lệ hoàn thành</th>
+                    <th className="p-3 text-center">
+                      Tỷ lệ hoàn thành <span className="text-[#1F5FBF]">↓</span>
+                    </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -1308,7 +1314,7 @@ export const ReportsPage: React.FC = () => {
                   {step === 3 && 'Bước 3: Xem trước dữ liệu và Xuất bản chính thức'}
                 </p>
               </div>
-              <button
+              <button title="Đóng"
                 type="button"
                 onClick={() => setIsCreateModalOpen(false)}
                 className="p-1 text-slate-400 hover:text-slate-700 rounded-lg cursor-pointer"
@@ -1517,7 +1523,7 @@ export const ReportsPage: React.FC = () => {
             {/* Stepper Buttons */}
             <div className="flex items-center justify-between pt-3 border-t border-slate-100">
               {step > 1 ? (
-                <button
+                <button title="Quay lại"
                   type="button"
                   onClick={() => setStep((step - 1) as any)}
                   className="inline-flex items-center gap-1 px-4 py-2 font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg cursor-pointer"
@@ -1525,7 +1531,7 @@ export const ReportsPage: React.FC = () => {
                   <ChevronLeft className="w-4 h-4" /> Quay lại
                 </button>
               ) : (
-                <button
+                <button title="Hủy"
                   type="button"
                   onClick={() => setIsCreateModalOpen(false)}
                   className="px-4 py-2 font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg cursor-pointer"
@@ -1535,7 +1541,7 @@ export const ReportsPage: React.FC = () => {
               )}
 
               {step < 3 ? (
-                <button
+                <button title="Tiếp tục"
                   type="button"
                   onClick={() => setStep((step + 1) as any)}
                   className="inline-flex items-center gap-1 px-5 py-2 font-bold text-white bg-[#1F5FBF] hover:bg-[#154690] rounded-lg cursor-pointer shadow-xs"
@@ -1543,7 +1549,7 @@ export const ReportsPage: React.FC = () => {
                   Tiếp tục <ChevronRight className="w-4 h-4" />
                 </button>
               ) : (
-                <button
+                <button title="Xuất bản & Lưu trữ"
                   type="button"
                   onClick={handlePublishReport}
                   className="inline-flex items-center gap-1.5 px-6 py-2 font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg cursor-pointer shadow-xs"
@@ -1562,7 +1568,7 @@ export const ReportsPage: React.FC = () => {
           <div className="bg-white rounded-xl max-w-lg w-full p-6 space-y-4 shadow-xl text-xs">
             <div className="flex items-center justify-between pb-3 border-b border-slate-100">
               <h3 className="text-base font-bold text-slate-900">Chi tiết Văn bản Báo cáo</h3>
-              <button
+              <button title="Đóng"
                 type="button"
                 onClick={() => setSelectedReport(null)}
                 className="p-1 text-slate-400 hover:text-slate-700 rounded-lg cursor-pointer"
@@ -1655,14 +1661,14 @@ export const ReportsPage: React.FC = () => {
             </div>
 
             <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
-              <button
+              <button title="Đóng"
                 type="button"
                 onClick={() => setSelectedReport(null)}
                 className="px-4 py-2 font-semibold text-slate-600 bg-slate-100 rounded-lg cursor-pointer"
               >
                 Đóng
               </button>
-              <button
+              <button title="Tải về máy (PDF)"
                 type="button"
                 onClick={() => handleExportFile('PDF', selectedReport.title)}
                 className="inline-flex items-center gap-1.5 px-4 py-2 font-bold text-white bg-[#1F5FBF] hover:bg-[#154690] rounded-lg cursor-pointer"

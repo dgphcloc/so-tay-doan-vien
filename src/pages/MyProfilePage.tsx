@@ -1,7 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { useApp } from '../context/AppContext';
+import { Avatar } from '../components/common/Avatar';
 import { formatDateVN } from '../mock/data';
-import { User, Save, Loader2, Lock, Info, Camera, Upload, X } from 'lucide-react';
+import { User, Save, Loader2, Lock, Info, Camera, Upload, X, CreditCard, ChevronRight } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { pickImageFile } from '../utils/evidence';
 import type { PoliticalTheoryLevel } from '../types';
 
@@ -106,6 +108,28 @@ export const MyProfilePage: React.FC = () => {
         </p>
       </div>
 
+      {/* Thẻ nghĩa vụ đoàn phí */}
+      <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200/80 rounded-xl p-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-[#1F5FBF]/10 text-[#1F5FBF] flex items-center justify-center shrink-0">
+            <CreditCard className="w-5 h-5" />
+          </div>
+          <div>
+            <h4 className="text-xs font-bold text-slate-900">Nghĩa vụ Đoàn phí</h4>
+            <p className="text-[11px] text-slate-600 mt-0.5">
+              Đối tượng: <strong>{currentMember.has_salary ? 'Có hưởng lương (5.000đ/tháng)' : 'Không hưởng lương (2.000đ/tháng)'}</strong>
+            </p>
+          </div>
+        </div>
+
+        <Link
+          to="/doan-phi"
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-white bg-[#1F5FBF] hover:bg-[#154690] rounded-lg shadow-2xs"
+        >
+          Xem & Quét VietQR <ChevronRight className="w-3.5 h-3.5" />
+        </Link>
+      </div>
+
       {/* Form sửa thông tin an toàn */}
       <form onSubmit={handleSave} className="bg-white rounded-xl border border-slate-200 shadow-xs p-5 space-y-4 text-xs">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -144,8 +168,7 @@ export const MyProfilePage: React.FC = () => {
             <div className="flex items-center gap-3">
               {avatarUrl ? (
                 <div className="relative shrink-0">
-                  <img src={avatarUrl} alt="Ảnh đại diện"
-                    className="w-16 h-16 rounded-full object-cover border-2 border-slate-200" />
+                  <Avatar src={avatarUrl} name={currentMember?.full_name} seed={currentMember?.id} size={64} className="ring-2 ring-slate-200" />
                   <button type="button" onClick={() => setAvatarUrl('')}
                     title="Bỏ ảnh này"
                     className="absolute -top-1 -right-1 bg-white border border-slate-200 rounded-full p-0.5 text-rose-600 hover:bg-rose-50">
@@ -158,7 +181,7 @@ export const MyProfilePage: React.FC = () => {
                 </div>
               )}
               <div className="flex-1 space-y-1.5">
-                <button type="button" disabled={uploadingAvatar} onClick={handlePickAvatar}
+                <button title="Tải lên" type="button" disabled={uploadingAvatar} onClick={handlePickAvatar}
                   className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-white bg-[#1F5FBF] hover:bg-[#1a4fa0] rounded-lg disabled:opacity-60">
                   {uploadingAvatar ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
                   {uploadingAvatar ? 'Đang tải lên…' : 'Chọn ảnh từ máy'}
@@ -178,7 +201,7 @@ export const MyProfilePage: React.FC = () => {
         </div>
 
         <div className="pt-2">
-          <button type="submit" disabled={busy}
+          <button title="Lưu thay đổi" type="submit" disabled={busy}
             className="inline-flex items-center gap-2 px-5 py-2.5 text-xs font-bold text-white bg-[#1F5FBF] hover:bg-[#154690] rounded-lg shadow-xs disabled:opacity-60">
             {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
             Lưu thay đổi

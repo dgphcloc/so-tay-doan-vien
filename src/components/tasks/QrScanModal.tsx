@@ -143,7 +143,7 @@ export const QrScanModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
           <h3 className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
             <Camera className="w-4 h-4 text-[#1F5FBF]" /> Quét QR nhiệm vụ
           </h3>
-          <button type="button" onClick={onClose} className="p-1 rounded-full text-slate-400 hover:text-slate-600 hover:bg-slate-100">
+          <button title="Đóng" type="button" onClick={onClose} className="p-1 rounded-full text-slate-400 hover:text-slate-600 hover:bg-slate-100">
             <X className="w-4 h-4" />
           </button>
         </div>
@@ -185,7 +185,7 @@ export const QrScanModal: React.FC<{ onClose: () => void }> = ({ onClose }) => {
               placeholder=".../#/nop-ca-nhan?task=12"
               className="flex-1 px-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:border-[#1F5FBF]"
             />
-            <button
+            <button title="Mở"
               type="button"
               disabled={!manual.trim()}
               onClick={() => handleText(manual)}

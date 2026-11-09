@@ -17,6 +17,7 @@ import {
   DbTaskSubCriterion,
   DbTaskResult,
   DbMemberSubmission,
+  DbUnitReport,
   DbJournalEntry,
   DbEvidence,
   DbNotification,
@@ -34,7 +35,29 @@ import {
   UnitTypeId,
   CommitteePosition,
   ReportType,
+  DbEvaluationPeriod,
+  DbMemberRldvLevel,
+  DbMemberDiscipline,
+  DbMemberEvaluation,
+  DbUnitEvaluation,
+  DbUnionFeeSettings,
+  DbUnionFeePayment,
+  DbUnitFeeDistribution,
+  DbScheduledNotification,
+  FeePaymentMethod,
+  FeePaymentStatus,
+  PeriodType,
+  PeriodStatus,
+  RatingLevel,
+  DisciplineForm,
 } from './types';
+import {
+  computeMemberRating,
+  computeUnitRating,
+  percent,
+  hasStrictDisciplineInPeriod,
+  periodRange,
+} from '../utils/evaluationRules';
 import {
   mockRoles,
   mockUnitTypes,
@@ -102,10 +125,43 @@ export class MockRepository implements Repository {
   private notifications: DbNotification[] = JSON.parse(JSON.stringify(mockNotifications));
   private warnings: DbWarning[] = JSON.parse(JSON.stringify(mockWarnings));
   private memberSubmissions: DbMemberSubmission[] = [];
+  private unitReports: DbUnitReport[] = [];
   private unitCommittees: DbUnitCommittee[] = JSON.parse(JSON.stringify(mockUnitCommittees));
   private reports: DbReport[] = JSON.parse(JSON.stringify(mockReports));
   private yearlySettings: DbYearlySettings = JSON.parse(JSON.stringify(mockYearlySettings));
   private auditLogs: DbAuditLog[] = JSON.parse(JSON.stringify(mockAuditLogs));
+
+  // Đánh giá hằng năm (bộ nhớ tạm ở chế độ mock)
+  private evaluationPeriods: DbEvaluationPeriod[] = [];
+  private memberRldvLevels: DbMemberRldvLevel[] = [];
+  private memberDisciplines: DbMemberDiscipline[] = [];
+  private memberEvaluations: DbMemberEvaluation[] = [];
+  private unitEvaluations: DbUnitEvaluation[] = [];
+
+  // Đoàn phí (bộ nhớ tạm ở chế độ mock)
+  private unionFeeSettings: DbUnionFeeSettings = {
+    id: 1,
+    bank_name: 'MB Bank',
+    bank_code: '970422',
+    account_number: '0585682707',
+    account_holder: 'DUONG PHUOC LOC',
+    auto_remind_day: 5,
+    fee_non_salary: 2000,
+    fee_has_salary: 5000,
+    payos_client_id: '8ee9d939-9f65-4c50-a6bd-d0268ce14dfd',
+    payos_api_key: '4e07a201-0bab-43ad-89aa-d2bcf6ca9e96',
+    payos_checksum_key: '5e51534bea3712dc6d4fc59e44418e3172d2a5369675e846c2ced044b2d41363',
+    payos_active: true,
+    updated_at: new Date().toISOString(),
+  };
+  private unionFeePayments: DbUnionFeePayment[] = [];
+  private unitFeeDistributions: DbUnitFeeDistribution[] = [];
+  private scheduledNotifications: DbScheduledNotification[] = [];
+
+  private seq = 1;
+  private nextId(prefix: string): string {
+    return `${prefix}_${Date.now()}_${this.seq++}`;
+  }
 
   // 0. Người dùng đang đăng nhập — chế độ mock không có phiên thật
   async getCurrentUser(): Promise<{
@@ -157,6 +213,29 @@ export class MockRepository implements Repository {
   async listMemberSubmissionEvidences(): Promise<DbEvidence[]> {
     return [];
   }
+
+  // Báo cáo riêng của Bí thư chi đoàn — chỉ hoạt động khi kết nối Supabase thật
+  async listUnitReports(): Promise<DbUnitReport[]> {
+    return [];
+  }
+  async submitUnitReport(): Promise<never> {
+    throw new Error('Nộp báo cáo chi đoàn chỉ dùng khi kết nối Supabase thật.');
+  }
+  async reviewUnitReport(): Promise<never> {
+    throw new Error('Duyệt báo cáo chi đoàn chỉ dùng khi kết nối Supabase thật.');
+  }
+  async listUnitReportEvidences(): Promise<DbEvidence[]> {
+    return [];
+  }
+
+  // Tạo tài khoản đăng nhập — cần Supabase thật (service_role ở server)
+  async createMemberAccount(): Promise<never> {
+    throw new Error('Tạo tài khoản đăng nhập chỉ dùng khi kết nối Supabase thật.');
+  }
+  async bulkCreateMemberAccounts(): Promise<never> {
+    throw new Error('Tạo tài khoản đăng nhập chỉ dùng khi kết nối Supabase thật.');
+  }
+
   async listTaskParticipantsAll(): Promise<never> {
     throw new Error('Chức năng xem danh sách tham gia chỉ dùng khi kết nối Supabase thật.');
   }
@@ -987,8 +1066,17 @@ export class MockRepository implements Repository {
     return { success: false, message: 'Lỗi lưu đoàn viên' };
   }
 
-  async deleteMember(id: string): Promise<{ success: boolean }> {
+  async deleteMember(id: string): Promise<{ success: boolean; message?: string }> {
+    const exists = this.members.some(m => m.id === id);
+    if (!exists) return { success: false, message: 'Không tìm thấy đoàn viên' };
     this.members = this.members.filter(m => m.id !== id);
+    return { success: true };
+  }
+
+  async setMemberActive(id: string, active: boolean): Promise<{ success: boolean; message?: string }> {
+    const m = this.members.find(x => x.id === id);
+    if (!m) return { success: false, message: 'Không tìm thấy đoàn viên' };
+    m.is_active = active;
     return { success: true };
   }
 
@@ -1019,6 +1107,26 @@ export class MockRepository implements Repository {
         return m ? { committee: c, member: m } : null;
       })
       .filter(Boolean) as Array<{ committee: DbUnitCommittee; member: DbMember }>;
+  }
+
+  async updateCommitteeMember(input: {
+    committeeId: string; position: CommitteePosition; isStanding: boolean;
+  }): Promise<{ success: boolean; message?: string }> {
+    const c = this.unitCommittees.find(x => x.id === input.committeeId);
+    if (!c) return { success: false, message: 'Không tìm thấy nhân sự trong BCH' };
+
+    if (input.position === 'secretary') {
+      const otherSecretary = this.unitCommittees.find(
+        x => x.id !== input.committeeId && x.unit_id === c.unit_id && x.position === 'secretary' && !x.term_end
+      );
+      if (otherSecretary) {
+        return { success: false, message: 'Chi đoàn này đã có Bí thư đang giữ chức. Hãy kết thúc nhiệm kỳ của Bí thư hiện tại trước.' };
+      }
+    }
+
+    c.position = input.position;
+    c.is_standing = input.position === 'secretary' || input.position === 'deputy_secretary' ? true : input.isStanding;
+    return { success: true };
   }
 
   async addCommitteeMember(input: {
@@ -1366,6 +1474,31 @@ export class MockRepository implements Repository {
     };
   }
 
+  async listMyNotifications(): Promise<DbNotification[]> {
+    return this.notifications;
+  }
+
+  async listAllNotifications(): Promise<DbNotification[]> {
+    return this.notifications;
+  }
+
+  async markNotificationAsRead(id: string): Promise<{ success: boolean }> {
+    const n = this.notifications.find(item => item.id === id);
+    if (n) n.is_read = true;
+    return { success: true };
+  }
+
+  async markAllNotificationsAsRead(): Promise<{ success: boolean; count?: number }> {
+    let count = 0;
+    this.notifications.forEach(n => {
+      if (!n.is_read) {
+        n.is_read = true;
+        count++;
+      }
+    });
+    return { success: true, count };
+  }
+
   // 9. Báo cáo
   async listReports(): Promise<DbReport[]> {
     return [...this.reports];
@@ -1500,8 +1633,837 @@ export class MockRepository implements Repository {
     });
   }
 
-  async getRawSnapshot() {
+  // =====================================================================
+  // ĐÁNH GIÁ, XẾP LOẠI HẰNG NĂM (chế độ mock — lưu trong bộ nhớ)
+  // =====================================================================
+  async listEvaluationPeriods(): Promise<DbEvaluationPeriod[]> {
+    return [...this.evaluationPeriods].sort((a, b) => b.year - a.year);
+  }
+
+  async saveEvaluationPeriod(input: {
+    year: number; periodType: PeriodType; name: string;
+  }): Promise<{ success: boolean; message?: string; period?: DbEvaluationPeriod }> {
+    const range = periodRange(input.year, input.periodType);
+    const existing = this.evaluationPeriods.find(
+      p => p.year === input.year && p.period_type === input.periodType
+    );
+    if (existing) {
+      existing.name = input.name;
+      existing.start_date = range.start;
+      existing.end_date = range.end;
+      existing.updated_at = new Date().toISOString();
+      return { success: true, period: { ...existing } };
+    }
+    const created: DbEvaluationPeriod = {
+      id: this.nextId('period'),
+      year: input.year,
+      name: input.name,
+      period_type: input.periodType,
+      start_date: range.start,
+      end_date: range.end,
+      status: 'draft',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+    this.evaluationPeriods.push(created);
+    return { success: true, period: { ...created } };
+  }
+
+  async setEvaluationPeriodStatus(id: string, status: PeriodStatus): Promise<{ success: boolean; message?: string }> {
+    const p = this.evaluationPeriods.find(x => x.id === id);
+    if (!p) return { success: false, message: 'Không tìm thấy kỳ đánh giá' };
+    if (status === 'open') {
+      this.memberEvaluations
+        .filter(e => e.period_id === id && e.status === 'finalized')
+        .forEach(e => {
+          e.status = 'secretary_done';
+          e.admin_rating = null;
+          e.admin_note = undefined;
+          e.admin_id = null;
+          e.admin_at = null;
+        });
+      this.unitEvaluations
+        .filter(e => e.period_id === id && e.status === 'finalized')
+        .forEach(e => {
+          e.status = 'auto';
+          e.final_rating = null;
+          e.rated_by = null;
+          e.rated_at = null;
+        });
+    }
+    p.status = status;
+    p.updated_at = new Date().toISOString();
+    return { success: true };
+  }
+
+  async listMemberRldvLevels(year: number): Promise<DbMemberRldvLevel[]> {
+    return this.memberRldvLevels.filter(r => r.year === year);
+  }
+
+  async saveMemberRldvLevel(input: {
+    memberId: string; year: number; level: RatingLevel; note?: string;
+  }): Promise<{ success: boolean; message?: string }> {
+    const found = this.memberRldvLevels.find(
+      r => r.member_id === input.memberId && r.year === input.year
+    );
+    if (found) {
+      found.level = input.level;
+      found.note = input.note;
+      found.evaluated_at = new Date().toISOString().slice(0, 10);
+    } else {
+      this.memberRldvLevels.push({
+        id: this.nextId('rldv'),
+        member_id: input.memberId,
+        year: input.year,
+        level: input.level,
+        note: input.note,
+        evaluated_at: new Date().toISOString().slice(0, 10),
+        evaluated_by: null,
+      });
+    }
+    return { success: true };
+  }
+
+  async listMemberDisciplines(filters?: { memberId?: string; year?: number }): Promise<DbMemberDiscipline[]> {
+    return this.memberDisciplines.filter(d => {
+      if (filters?.memberId && d.member_id !== filters.memberId) return false;
+      if (filters?.year && !d.decided_at.startsWith(String(filters.year))) return false;
+      return true;
+    });
+  }
+
+  async saveMemberDiscipline(input: {
+    id?: string; memberId: string; decisionNo: string; form: DisciplineForm; decidedAt: string;
+    effectiveFrom?: string | null; effectiveTo?: string | null; reason?: string;
+  }): Promise<{ success: boolean; message?: string }> {
+    const found = input.id ? this.memberDisciplines.find(d => d.id === input.id) : undefined;
+    if (found) {
+      found.member_id = input.memberId;
+      found.decision_no = input.decisionNo;
+      found.form = input.form;
+      found.decided_at = input.decidedAt;
+      found.effective_from = input.effectiveFrom ?? null;
+      found.effective_to = input.effectiveTo ?? null;
+      found.reason = input.reason;
+      return { success: true };
+    }
+    this.memberDisciplines.push({
+      id: this.nextId('disc'),
+      member_id: input.memberId,
+      decision_no: input.decisionNo,
+      form: input.form,
+      decided_at: input.decidedAt,
+      effective_from: input.effectiveFrom ?? null,
+      effective_to: input.effectiveTo ?? null,
+      reason: input.reason,
+      created_by: null,
+      created_at: new Date().toISOString(),
+    });
+    return { success: true };
+  }
+
+  async deleteMemberDiscipline(id: string): Promise<{ success: boolean; message?: string }> {
+    this.memberDisciplines = this.memberDisciplines.filter(d => d.id !== id);
+    return { success: true };
+  }
+
+  async listMemberEvaluations(periodId: string): Promise<DbMemberEvaluation[]> {
+    return this.memberEvaluations.filter(e => e.period_id === periodId);
+  }
+
+  async generateMemberEvaluations(
+    periodId: string,
+    options?: { recompute?: boolean }
+  ): Promise<{ success: boolean; created: number; updated: number; message?: string }> {
+    const period = this.evaluationPeriods.find(p => p.id === periodId);
+    if (!period) return { success: false, created: 0, updated: 0, message: 'Không tìm thấy kỳ đánh giá' };
+
+    const assignedByUnit = new Map<string, Set<string>>();
+    for (const rel of this.taskUnits) {
+      const task = this.tasks.find(t => t.id === rel.task_id);
+      if (!task) continue;
+      const due = String(task.due_date ?? '').slice(0, 10);
+      if (due && (due < period.start_date || due > period.end_date)) continue;
+      if (!assignedByUnit.has(rel.unit_id)) assignedByUnit.set(rel.unit_id, new Set());
+      assignedByUnit.get(rel.unit_id)!.add(rel.task_id);
+    }
+    const completedByUnit = new Map<string, Set<string>>();
+    for (const r of this.taskResults) {
+      if (r.status !== 'approved') continue;
+      if (!completedByUnit.has(r.unit_id)) completedByUnit.set(r.unit_id, new Set());
+      completedByUnit.get(r.unit_id)!.add(r.task_id);
+    }
+    const approvedByMember = new Map<string, Set<string>>();
+    for (const s of this.memberSubmissions) {
+      if (s.status !== 'approved') continue;
+      if (!approvedByMember.has(s.member_id)) approvedByMember.set(s.member_id, new Set());
+      approvedByMember.get(s.member_id)!.add(s.task_id);
+    }
+
+    let created = 0;
+    let updated = 0;
+    for (const m of this.members.filter(x => x.is_active)) {
+      const assigned = assignedByUnit.get(m.unit_id) ?? new Set<string>();
+      const completedUnit = completedByUnit.get(m.unit_id) ?? new Set<string>();
+      const completedMember = approvedByMember.get(m.id) ?? new Set<string>();
+      let completedTasks = 0;
+      for (const t of assigned) if (completedMember.has(t) || completedUnit.has(t)) completedTasks += 1;
+
+      const rldv = this.memberRldvLevels.find(r => r.member_id === m.id && r.year === period.year) ?? null;
+      const discs = this.memberDisciplines.filter(d => d.member_id === m.id);
+      const result = computeMemberRating({
+        totalTasks: assigned.size,
+        completedTasks,
+        rldvLevel: rldv?.level ?? null,
+        hasStrictDiscipline: hasStrictDisciplineInPeriod(discs, period.start_date, period.end_date),
+        isPartyMember: !!m.is_party_member,
+        isLongAbsent: false,
+      });
+
+      const prev = this.memberEvaluations.find(e => e.period_id === periodId && e.member_id === m.id);
+      const base = {
+        total_tasks: assigned.size,
+        completed_tasks: completedTasks,
+        participation_rate: result.participationRate,
+        is_party_member_block: !!m.is_party_member,
+        auto_rating: result.autoRating,
+        updated_at: new Date().toISOString(),
+      };
+      if (!prev) {
+        this.memberEvaluations.push({
+          id: this.nextId('meval'),
+          period_id: periodId,
+          member_id: m.id,
+          unit_id: m.unit_id,
+          is_long_absent: false,
+          member_response: null,
+          secretary_rating: null,
+          admin_rating: null,
+          status: 'auto',
+          created_at: new Date().toISOString(),
+          ...base,
+        });
+        created++;
+      } else if (options?.recompute && prev.status !== 'finalized') {
+        Object.assign(prev, base);
+        updated++;
+      }
+    }
+    return { success: true, created, updated };
+  }
+
+  async saveMemberEvaluationResponse(input: {
+    evaluationId: string; response: 'confirmed' | 'disagreed'; feedback?: string;
+  }): Promise<{ success: boolean; message?: string }> {
+    const e = this.memberEvaluations.find(x => x.id === input.evaluationId);
+    if (!e) return { success: false, message: 'Không tìm thấy phiếu' };
+    e.member_response = input.response;
+    e.member_feedback = input.feedback;
+    e.member_responded_at = new Date().toISOString();
+    e.status = 'member_responded';
+    return { success: true };
+  }
+
+  async reviewMemberEvaluation(input: {
+    evaluationId: string; rating: RatingLevel; note?: string;
+  }): Promise<{ success: boolean; message?: string }> {
+    const e = this.memberEvaluations.find(x => x.id === input.evaluationId);
+    if (!e) return { success: false, message: 'Không tìm thấy phiếu' };
+    if (e.status === 'finalized') return { success: false, message: 'Phiếu đã chốt, hãy hủy chốt trước' };
+    e.secretary_rating = input.rating;
+    e.secretary_note = input.note;
+    e.secretary_at = new Date().toISOString();
+    e.status = 'secretary_done';
+    return { success: true };
+  }
+
+  async finalizeMemberEvaluation(input: {
+    evaluationId: string; rating: RatingLevel; note?: string;
+  }): Promise<{ success: boolean; message?: string }> {
+    const e = this.memberEvaluations.find(x => x.id === input.evaluationId);
+    if (!e) return { success: false, message: 'Không tìm thấy phiếu' };
+    e.admin_rating = input.rating;
+    e.admin_note = input.note;
+    e.admin_at = new Date().toISOString();
+    e.status = 'finalized';
+    return { success: true };
+  }
+
+  async listUnitEvaluations(periodId: string): Promise<DbUnitEvaluation[]> {
+    return this.unitEvaluations.filter(e => e.period_id === periodId);
+  }
+
+  async generateUnitEvaluations(periodId: string): Promise<{ success: boolean; created: number; updated: number; message?: string }> {
+    const period = this.evaluationPeriods.find(p => p.id === periodId);
+    if (!period) return { success: false, created: 0, updated: 0, message: 'Không tìm thấy kỳ đánh giá' };
+    const evals = this.memberEvaluations.filter(e => e.period_id === periodId);
+    let created = 0;
+    let updated = 0;
+    for (const u of this.units.filter(x => x.is_active)) {
+      const unitEvals = evals.filter(e => e.unit_id === u.id);
+      const unitMembers = this.members.filter(m => m.is_active && m.unit_id === u.id);
+      const memberTotal = unitMembers.length;
+      const goodCount = unitEvals.filter(e =>
+        (e.admin_rating ?? e.auto_rating) === 'excellent' || (e.admin_rating ?? e.auto_rating) === 'good'
+      ).length;
+      const failCount = unitEvals.filter(e => (e.admin_rating ?? e.auto_rating) === 'fail').length;
+      const goodRate = percent(goodCount, memberTotal || 1);
+      const assigned = this.taskUnits.filter(t => t.unit_id === u.id).length;
+      const done = this.taskResults.filter(r => r.unit_id === u.id && r.status === 'approved').length;
+      const taskRate = percent(done, assigned);
+      const complete = unitMembers.filter(m =>
+        m.full_name && m.birth_date && m.gender && m.phone && m.joined_date && m.central_member_code).length;
+      const digitalRate = percent(complete, memberTotal);
+
+      const result = computeUnitRating({
+        taskCompletionRate: taskRate,
+        memberGoodRate: goodRate,
+        digitalRate,
+        meetingOk: false,
+        feeOk: false,
+        hasDiscipline: failCount > 0,
+      });
+
+      const prev = this.unitEvaluations.find(e => e.period_id === periodId && e.unit_id === u.id);
+      const base = {
+        task_completion_rate: taskRate,
+        member_good_rate: goodRate,
+        member_fail_count: failCount,
+        member_total: memberTotal,
+        digital_rate: digitalRate,
+        auto_rating: result.autoRating,
+        updated_at: new Date().toISOString(),
+      };
+      if (!prev) {
+        this.unitEvaluations.push({
+          id: this.nextId('ueval'),
+          period_id: periodId,
+          unit_id: u.id,
+          meeting_ok: false,
+          fee_ok: false,
+          has_discipline: failCount > 0,
+          final_rating: null,
+          status: 'auto',
+          created_at: new Date().toISOString(),
+          ...base,
+        });
+        created++;
+      } else if (prev.status !== 'finalized') {
+        Object.assign(prev, base);
+        updated++;
+      }
+    }
+    return { success: true, created, updated };
+  }
+
+  async finalizeUnitEvaluation(input: {
+    unitEvaluationId: string;
+    rating: RatingLevel;
+    meetingOk: boolean;
+    feeOk: boolean;
+    hasDiscipline: boolean;
+    note?: string;
+  }): Promise<{ success: boolean; message?: string }> {
+    const e = this.unitEvaluations.find(x => x.id === input.unitEvaluationId);
+    if (!e) return { success: false, message: 'Không tìm thấy phiếu' };
+    e.final_rating = input.rating;
+    e.meeting_ok = input.meetingOk;
+    e.fee_ok = input.feeOk;
+    e.has_discipline = input.hasDiscipline;
+    e.note = input.note;
+    e.rated_at = new Date().toISOString();
+    e.status = 'finalized';
+    return { success: true };
+  }
+
+  // =====================================================================
+  // GIAI ĐOẠN 9 · THU NỘP & QUẢN LÝ ĐOÀN PHÍ (HƯỚNG DẪN 39)
+  // =====================================================================
+
+  async getUnionFeeSettings(): Promise<DbUnionFeeSettings> {
+    return { ...this.unionFeeSettings };
+  }
+
+  async updateUnionFeeSettings(updates: Partial<DbUnionFeeSettings>): Promise<{ success: boolean; message?: string }> {
+    Object.assign(this.unionFeeSettings, updates, { updated_at: new Date().toISOString() });
+    return { success: true };
+  }
+
+  async listUnionFeePayments(filters?: {
+    memberId?: string;
+    unitId?: string;
+    year?: number;
+    status?: FeePaymentStatus;
+  }): Promise<DbUnionFeePayment[]> {
+    return this.unionFeePayments.filter(p => {
+      if (filters?.memberId && p.member_id !== filters.memberId) return false;
+      if (filters?.unitId && p.unit_id !== filters.unitId) return false;
+      if (filters?.year && p.year !== filters.year) return false;
+      if (filters?.status && p.status !== filters.status) return false;
+      return true;
+    });
+  }
+
+  async createUnionFeePayment(input: {
+    memberId: string;
+    unitId: string;
+    year: number;
+    months: number[];
+    amount: number;
+    paymentMethod: FeePaymentMethod;
+    orderCode?: number | null;
+    evidenceUrl?: string;
+    note?: string;
+  }): Promise<{ success: boolean; message?: string; paymentId?: string }> {
+    const id = this.nextId('fee');
+    const payment: DbUnionFeePayment = {
+      id,
+      member_id: input.memberId,
+      unit_id: input.unitId,
+      year: input.year,
+      months: [...input.months],
+      amount: input.amount,
+      payment_method: input.paymentMethod,
+      status: input.paymentMethod === 'cash' ? 'approved' : 'pending',
+      order_code: input.orderCode || null,
+      evidence_url: input.evidenceUrl,
+      note: input.note,
+      reviewed_at: input.paymentMethod === 'cash' ? new Date().toISOString() : null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+    this.unionFeePayments.push(payment);
+    return { success: true, paymentId: id };
+  }
+
+  async reviewUnionFeePayment(input: {
+    paymentId: string;
+    status: 'approved' | 'rejected';
+    note?: string;
+  }): Promise<{ success: boolean; message?: string }> {
+    const p = this.unionFeePayments.find(x => x.id === input.paymentId);
+    if (!p) return { success: false, message: 'Không tìm thấy phiếu nộp đoàn phí' };
+    p.status = input.status;
+    p.note = input.note || p.note;
+    p.reviewed_at = new Date().toISOString();
+    p.updated_at = new Date().toISOString();
+    return { success: true };
+  }
+
+  async confirmPayOsPayment(orderCode: number, amount: number): Promise<{ success: boolean; message?: string }> {
+    const p = this.unionFeePayments.find(x => x.order_code === orderCode);
+    if (!p) return { success: false, message: 'Không tìm thấy đơn hàng' };
+    p.status = 'approved';
+    p.reviewed_at = new Date().toISOString();
+    p.updated_at = new Date().toISOString();
+    p.note = (p.note || '') + ' [Xác nhận tự động qua payOS]';
+
+    // Thêm thông báo
+    this.notifications.push({
+      id: this.nextId('notif'),
+      recipient_id: p.member_id,
+      type: 'system',
+      level: 'yellow',
+      title: 'Thanh toán đoàn phí thành công',
+      body: `Hệ thống đã nhận được ${amount.toLocaleString('vi-VN')}đ đoàn phí năm ${p.year} của bạn qua payOS.`,
+      task_id: null,
+      sub_criterion_id: null,
+      is_read: false,
+      created_at: new Date().toISOString(),
+    });
+
+    return { success: true };
+  }
+
+  async createPayOsPaymentLink(input: {
+    orderCode: number;
+    amount: number;
+    description: string;
+    buyerName?: string;
+    buyerPhone?: string;
+    expiresInMinutes?: number;
+  }) {
+    // Chế độ mock: không gọi mạng, trả về dữ liệu giả để UI hiển thị
     return {
+      success: true,
+      paymentLinkId: `mock_${input.orderCode}`,
+      checkoutUrl: '',
+      qrCode: '',
+      bin: '970422',
+      accountNumber: '0585682707',
+      accountName: 'DUONG PHUOC LOC',
+      amount: input.amount,
+      description: input.description,
+      orderCode: input.orderCode,
+      expiredAt: Math.floor(Date.now() / 1000) + (input.expiresInMinutes ?? 15) * 60,
+      status: 'PENDING',
+      message: 'Chế độ mock — không gọi payOS thật',
+    };
+  }
+
+  async checkPayOsPaymentStatus(orderCode: number) {
+    const p = this.unionFeePayments.find(x => x.order_code === orderCode);
+    return {
+      success: true,
+      status: p?.status === 'approved' ? 'PAID' : 'PENDING',
+      amount: p?.amount ?? 0,
+      amountPaid: p?.status === 'approved' ? p.amount : 0,
+      amountRemaining: p?.status === 'approved' ? 0 : (p?.amount ?? 0),
+      transactions: [],
+    };
+  }
+
+  async updateMemberFeeStatus(input: {
+    memberId: string;
+    hasSalary?: boolean;
+    exemptMonths?: number[];
+    transferredOutMonth?: number | null;
+  }): Promise<{ success: boolean; message?: string }> {
+    const m = this.members.find(x => x.id === input.memberId);
+    if (!m) return { success: false, message: 'Không tìm thấy đoàn viên' };
+    if (input.hasSalary !== undefined) m.has_salary = input.hasSalary;
+    if (input.exemptMonths !== undefined) m.exempt_months = input.exemptMonths;
+    if (input.transferredOutMonth !== undefined) m.transferred_out_month = input.transferredOutMonth;
+    return { success: true };
+  }
+
+  async listUnitFeeDistributions(year: number): Promise<DbUnitFeeDistribution[]> {
+    return this.unitFeeDistributions.filter(d => d.year === year);
+  }
+
+  async generateUnitFeeDistributions(year: number): Promise<{ success: boolean; count: number; message?: string }> {
+    let count = 0;
+    for (const u of this.units.filter(x => x.is_active)) {
+      const payments = this.unionFeePayments.filter(p => p.unit_id === u.id && p.year === year && p.status === 'approved');
+      const total = payments.reduce((sum, p) => sum + p.amount, 0);
+      const unitShare = Math.round((total * 2) / 3);
+      const communeShare = total - unitShare;
+
+      let prev = this.unitFeeDistributions.find(d => d.unit_id === u.id && d.year === year);
+      if (!prev) {
+        this.unitFeeDistributions.push({
+          id: this.nextId('dist'),
+          unit_id: u.id,
+          year,
+          period_label: 'Cả năm',
+          total_collected: total,
+          unit_share: unitShare,
+          commune_share: communeShare,
+          is_refunded: false,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        });
+        count++;
+      } else if (!prev.is_refunded) {
+        prev.total_collected = total;
+        prev.unit_share = unitShare;
+        prev.commune_share = communeShare;
+        prev.updated_at = new Date().toISOString();
+        count++;
+      }
+    }
+    return { success: true, count };
+  }
+
+  async markFeeDistributionRefunded(input: {
+    distributionId: string;
+    receiptNo?: string;
+    note?: string;
+  }): Promise<{ success: boolean; message?: string }> {
+    const d = this.unitFeeDistributions.find(x => x.id === input.distributionId);
+    if (!d) return { success: false, message: 'Không tìm thấy bản ghi trích nộp' };
+    d.is_refunded = true;
+    d.refunded_at = new Date().toISOString().slice(0, 10);
+    d.receipt_no = input.receiptNo;
+    d.note = input.note;
+    d.updated_at = new Date().toISOString();
+    return { success: true };
+  }
+
+  async sendUnionFeeReminder(input: {
+    recipientType: 'member' | 'unit' | 'all_unpaid';
+    memberId?: string;
+    unitId?: string;
+    year: number;
+    month?: number;
+  }): Promise<{ success: boolean; count: number; message?: string }> {
+    const curMonth = input.month || new Date().getMonth() + 1;
+    let targetMembers = this.members.filter(m => m.is_active);
+    if (input.recipientType === 'member' && input.memberId) {
+      targetMembers = targetMembers.filter(m => m.id === input.memberId);
+    } else if (input.recipientType === 'unit' && input.unitId) {
+      targetMembers = targetMembers.filter(m => m.unit_id === input.unitId);
+    }
+
+    const paidMemberMonth = new Set<string>();
+    for (const p of this.unionFeePayments) {
+      if (p.year === input.year && p.status === 'approved') {
+        for (const m of p.months) {
+          paidMemberMonth.add(`${p.member_id}_${m}`);
+        }
+      }
+    }
+
+    const unpaid = targetMembers.filter(m => !paidMemberMonth.has(`${m.id}_${curMonth}`));
+    for (const m of unpaid) {
+      this.notifications.push({
+        id: this.nextId('notif'),
+        recipient_id: m.id,
+        type: 'reminder',
+        level: 'orange',
+        title: `Nhắc nộp đoàn phí tháng ${curMonth}/${input.year}`,
+        body: `Đồng chí còn chưa hoàn thành đoàn phí tháng ${curMonth}/${input.year}. Vui lòng mở mục Đoàn phí để quét mã VietQR thanh toán.`,
+        task_id: null,
+        sub_criterion_id: null,
+        is_read: false,
+        created_at: new Date().toISOString(),
+      });
+    }
+
+    return { success: true, count: unpaid.length };
+  }
+
+  // =====================================================================
+  // GIAI ĐOẠN 10 · NHIỆM VỤ, LÊN LỊCH TB, ONBOARDING, KHÔI PHỤC GỐC
+  // =====================================================================
+
+  async updateTask(input: {
+    taskId: string;
+    taskData: Partial<DbTask>;
+    unitIds?: string[];
+  }): Promise<{ success: boolean; message?: string }> {
+    const t = this.tasks.find(x => x.id === input.taskId);
+    if (!t) return { success: false, message: 'Không tìm thấy nhiệm vụ' };
+    Object.assign(t, input.taskData);
+
+    if (input.unitIds !== undefined) {
+      this.taskUnits = this.taskUnits.filter(tu => tu.task_id !== input.taskId);
+      for (const uId of input.unitIds) {
+        this.taskUnits.push({ task_id: input.taskId, unit_id: uId });
+      }
+    }
+    return { success: true };
+  }
+
+  async listScheduledNotifications(): Promise<DbScheduledNotification[]> {
+    return [...this.scheduledNotifications];
+  }
+
+  async createScheduledNotification(input: {
+    title: string;
+    content: string;
+    level: 'yellow' | 'orange' | 'red';
+    recipientType: 'unit' | 'member' | 'all';
+    targetId?: string;
+    scheduledAt: string;
+  }): Promise<{ success: boolean; message?: string }> {
+    this.scheduledNotifications.push({
+      id: this.nextId('sched'),
+      title: input.title,
+      content: input.content,
+      level: input.level,
+      recipient_type: input.recipientType,
+      target_id: input.targetId || null,
+      scheduled_at: input.scheduledAt,
+      is_sent: false,
+      created_at: new Date().toISOString(),
+    });
+    return { success: true };
+  }
+
+  async deleteScheduledNotification(id: string): Promise<{ success: boolean; message?: string }> {
+    this.scheduledNotifications = this.scheduledNotifications.filter(s => s.id !== id);
+    return { success: true };
+  }
+
+  async dispatchScheduledNotifications(): Promise<{ count: number }> {
+    const now = new Date().toISOString();
+    let count = 0;
+    for (const s of this.scheduledNotifications) {
+      if (!s.is_sent && s.scheduled_at <= now) {
+        let targetMembers = this.members.filter(m => m.is_active);
+        if (s.recipient_type === 'member' && s.target_id) {
+          targetMembers = targetMembers.filter(m => m.id === s.target_id);
+        } else if (s.recipient_type === 'unit' && s.target_id) {
+          targetMembers = targetMembers.filter(m => m.unit_id === s.target_id);
+        }
+
+        for (const m of targetMembers) {
+          this.notifications.push({
+            id: this.nextId('notif'),
+            recipient_id: m.id,
+            type: 'reminder',
+            level: s.level,
+            title: s.title,
+            body: s.content,
+            task_id: null,
+            sub_criterion_id: null,
+            is_read: false,
+            created_at: new Date().toISOString(),
+          });
+        }
+
+        s.is_sent = true;
+        s.sent_at = new Date().toISOString();
+        count++;
+      }
+    }
+    return { count };
+  }
+
+  async reviewMemberRegistration(input: {
+    memberId: string;
+    action: 'approve' | 'reject';
+    rejectionReason?: string;
+  }): Promise<{ success: boolean; message?: string }> {
+    const m = this.members.find(x => x.id === input.memberId);
+    if (!m) return { success: false, message: 'Không tìm thấy hồ sơ đoàn viên' };
+
+    if (input.action === 'approve') {
+      m.approval_status = 'approved';
+      m.rejection_reason = undefined;
+      this.auditLogs.push({
+        id: this.nextId('audit'),
+        actor_id: 'self',
+        actor_role: 'unit_secretary',
+        action: 'APPROVE_MEMBER',
+        table_name: 'members',
+        row_id: m.id,
+        old_value: null,
+        new_value: 'Bí thư chi đoàn duyệt chính thức đoàn viên tự đăng ký',
+        created_at: new Date().toISOString(),
+      });
+      return { success: true };
+    } else {
+      if (!input.rejectionReason?.trim()) {
+        return { success: false, message: 'Vui lòng nêu rõ lý do từ chối hồ sơ' };
+      }
+      this.auditLogs.push({
+        id: this.nextId('audit'),
+        actor_id: 'self',
+        actor_role: 'unit_secretary',
+        action: 'REJECT_MEMBER',
+        table_name: 'members',
+        row_id: m.id,
+        old_value: `Từ chối với lý do: ${input.rejectionReason.trim()}`,
+        new_value: null,
+        created_at: new Date().toISOString(),
+      });
+      this.members = this.members.filter(x => x.id !== m.id);
+      return { success: true };
+    }
+  }
+
+  async toggleMemberNewlyAdmitted(memberId: string, isNewlyAdmitted: boolean): Promise<{ success: boolean; message?: string }> {
+    const m = this.members.find(x => x.id === memberId);
+    if (!m) return { success: false, message: 'Không tìm thấy đoàn viên' };
+    m.is_newly_admitted = isNewlyAdmitted;
+    return { success: true };
+  }
+
+  async resetFactoryData(confirmationText: string): Promise<{ success: boolean; message?: string }> {
+    if (confirmationText !== 'XOA TOAN BO DU LIEU') {
+      return { success: false, message: 'Cụm từ xác nhận không chính xác. Thao tác bị hủy.' };
+    }
+
+    // Xóa toàn bộ dữ liệu phát sinh (giữ lại danh mục gốc + tài khoản)
+    this.journalEntries = [];
+    this.evidences = [];
+    this.memberSubmissions = [];
+    this.taskResults = [];
+    this.taskSubCriteria = [];
+    this.taskRegistrations = [];
+    this.taskUnits = [];
+    this.tasks = [];
+    this.criterionSubmissions = [];
+    this.subCriteria = [];
+    this.criteria = [];
+    this.criteriaSections = [];
+    this.criteriaSets = [];
+    this.memberEvaluations = [];
+    this.unitEvaluations = [];
+    this.memberDisciplines = [];
+    this.memberRldvLevels = [];
+    this.evaluationPeriods = [];
+    this.unionFeePayments = [];
+    this.unitFeeDistributions = [];
+    this.scheduledNotifications = [];
+    this.notifications = [];
+    this.warnings = [];
+    this.reports = [];
+    this.unitCommittees = [];
+    // Giữ lại: roles, unitTypes, ethnicities, yearlySettings, profiles, members, units
+    // (người dùng tự xóa thủ công từng mục nếu muốn bàn giao trắng hoàn toàn)
+    return { success: true, message: 'Đã dọn sạch dữ liệu thử nghiệm ở chế độ mock.' };
+  }
+
+  async bulkApproveTaskResults(ids: string[], note?: string): Promise<{ success: boolean; approved: number; message?: string }> {
+    let approved = 0;
+    for (const id of ids) {
+      const r = this.taskResults.find(x => x.id === id);
+      if (r && r.status === 'pending') {
+        r.status = 'approved';
+        r.reviewed_at = new Date().toISOString();
+        r.review_note = note || 'Đạt yêu cầu';
+        approved++;
+      }
+    }
+    return { success: true, approved };
+  }
+
+  async getUnitCriterionProgress(unitId: string): Promise<Array<{
+    subCriterionId: string;
+    criterionName: string;
+    subName: string;
+    maxScore: number;
+    totalTasks: number;
+    doneTasks: number;
+    pendingTasks: number;
+  }>> {
+    const unit = this.units.find(u => u.id === unitId);
+    if (!unit) return [];
+
+    const applicable = this.subCriteria.filter(sc => {
+      const unitIds = sc.unit_ids ?? [];
+      if (unitIds.length > 0) return unitIds.includes(unitId);
+      const typeIds = sc.unit_type_ids ?? [];
+      if (typeIds.length === 0) return true;
+      return typeIds.includes(unit.unit_type_id);
+    });
+
+    return applicable.map(sc => {
+      const crit = this.criteria.find(c => c.id === sc.criterion_id);
+      const tasks = this.tasks.filter(t => t.source_sub_criterion_id === sc.id && t.status !== 'draft');
+      const results = this.taskResults.filter(r => r.unit_id === unitId);
+      const done = tasks.filter(t => results.some(r => r.task_id === t.id && r.status === 'approved')).length;
+      const pending = tasks.filter(t => results.some(r => r.task_id === t.id && r.status === 'pending')).length;
+      return {
+        subCriterionId: sc.id,
+        criterionName: crit?.name ?? '',
+        subName: sc.condition_text,
+        maxScore: sc.max_score,
+        totalTasks: tasks.length,
+        doneTasks: done,
+        pendingTasks: pending,
+      };
+    });
+  }
+
+  async listTasksBySubCriterion(subCriterionId: string): Promise<Array<{
+    task: DbTask;
+    results: DbTaskResult[];
+    unitName: string;
+  }>> {
+    return this.tasks
+      .filter(t => t.source_sub_criterion_id === subCriterionId)
+      .map(task => {
+        const results = this.taskResults.filter(r => r.task_id === task.id);
+        const unit = results[0] ? this.units.find(u => u.id === results[0].unit_id) : null;
+        return { task, results, unitName: unit?.name ?? '' };
+      });
+  }
+
+  async getRawSnapshot() {    return {
       roles: this.roles,
       unitTypes: this.unitTypes,
       ethnicities: this.ethnicities,
@@ -1526,6 +2488,7 @@ export class MockRepository implements Repository {
       yearlySettings: this.yearlySettings,
       auditLogs: this.auditLogs,
       memberSubmissions: this.memberSubmissions,
+      unitReports: this.unitReports,
     };
   }
 }

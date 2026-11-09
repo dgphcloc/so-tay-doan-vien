@@ -1,5 +1,6 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef } from 'react';
 import { useApp } from '../context/AppContext';
+import { Avatar } from '../components/common/Avatar';
 import {
   UserCheck,
   Shield,
@@ -15,9 +16,21 @@ import {
   AlertCircle,
   AlertTriangle,
   RotateCcw,
+  Download,
+  Upload,
+  FileSpreadsheet,
+  Loader2,
+  Edit2,
 } from 'lucide-react';
 import { CommitteePosition, UnitCommittee } from '../types';
 import { formatDateVN } from '../mock/data';
+import {
+  exportCommitteeExcel,
+  downloadCommitteeTemplate,
+  parseCommitteeWorkbook,
+  type CommitteeParseResult,
+  type ParsedCommitteeRow,
+} from '../utils/committeeExcel';
 
 export const CommitteePage: React.FC = () => {
   const {
@@ -26,11 +39,19 @@ export const CommitteePage: React.FC = () => {
     members,
     currentRole,
     addCommitteeMember,
+    updateCommitteeMember,
     endCommitteeTerm,
     getUnitById,
     getMemberById,
     showToast,
   } = useApp();
+
+  // Excel State
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [importResult, setImportResult] = useState<CommitteeParseResult | null>(null);
+  const [importFileName, setImportFileName] = useState('');
+  const [isImporting, setIsImporting] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Bộ chọn đầu trang: "BCH Đoàn xã" (null) hoặc 1 Chi đoàn (unitId)
   const [selectedUnitScope, setSelectedUnitScope] = useState<string>('commune'); // 'commune' or unit.id
@@ -46,7 +67,71 @@ export const CommitteePage: React.FC = () => {
   const [modalTermStart, setModalTermStart] = useState<string>(new Date().toISOString().split('T')[0]);
   const [errorMessage, setErrorMessage] = useState<string>('');
 
+  // Modal "Sửa chức vụ / tư cách thường vụ"
+  const [editingCommittee, setEditingCommittee] = useState<UnitCommittee | null>(null);
+  const [editPosition, setEditPosition] = useState<CommitteePosition>('committee_member');
+  const [editIsStanding, setEditIsStanding] = useState(false);
+  const [editError, setEditError] = useState('');
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
+
   const isStaff = currentRole === 'staff';
+
+  const handleExport = () => {
+    const scopeLabel = selectedUnitScope === 'commune' ? 'BCH Đoàn xã' : (currentUnit?.name || 'Chi đoàn');
+    exportCommitteeExcel(filteredCommittees, members, units, scopeLabel);
+    showToast({ title: 'Đã xuất file Excel Ban Chấp hành', type: 'success' });
+  };
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const buf = await file.arrayBuffer();
+      const res = await parseCommitteeWorkbook(buf, members, units);
+      setImportResult(res);
+      setImportFileName(file.name);
+      setIsImportModalOpen(true);
+    } catch (err) {
+      showToast({ title: 'Không đọc được file Excel', description: err instanceof Error ? err.message : '', type: 'error' });
+    }
+    e.target.value = '';
+  };
+
+  const handleConfirmImport = async () => {
+    if (!importResult) return;
+    const validRows = importResult.rows.filter(r => r.isValid && r.matchedMemberId);
+    if (validRows.length === 0) {
+      showToast({ title: 'Không có dòng hợp lệ để nạp', type: 'error' });
+      return;
+    }
+
+    setIsImporting(true);
+    let successCount = 0;
+    try {
+      for (const row of validRows) {
+        if (!row.matchedMemberId) continue;
+        const res = await addCommitteeMember(
+          row.matchedMemberId,
+          row.matchedUnitId || null,
+          row.position,
+          row.isStanding,
+          row.termStart
+        );
+        if (res.success) successCount++;
+      }
+      showToast({
+        title: 'Nạp danh sách BCH thành công!',
+        description: `Đã bổ nhiệm thành công ${successCount} nhân sự Ban Chấp hành.`,
+        type: 'success',
+      });
+      setIsImportModalOpen(false);
+      setImportResult(null);
+    } catch (err) {
+      showToast({ title: 'Có lỗi trong quá trình bổ nhiệm', description: err instanceof Error ? err.message : '', type: 'error' });
+    } finally {
+      setIsImporting(false);
+    }
+  };
 
   const maskPhone = (phone: string) => {
     if (isStaff && phone.length >= 7) {
@@ -60,6 +145,16 @@ export const CommitteePage: React.FC = () => {
     if (selectedUnitScope === 'commune') return null;
     return units.find(u => u.id === selectedUnitScope) || null;
   }, [units, selectedUnitScope]);
+
+  // Số đoàn viên thực tế đang hoạt động của từng chi đoàn
+  const activeMemberCountByUnit = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const m of members) {
+      if (!m.is_active) continue;
+      map.set(m.unit_id, (map.get(m.unit_id) || 0) + 1);
+    }
+    return map;
+  }, [members]);
 
   // Candidates for add member dropdown
   const candidateMembers = useMemo(() => {
@@ -165,16 +260,45 @@ export const CommitteePage: React.FC = () => {
           </p>
         </div>
 
-        <button
-          type="button"
-          onClick={() => {
-            setErrorMessage('');
-            setIsAddModalOpen(true);
-          }}
-          className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-white bg-[#1F5FBF] hover:bg-[#154690] rounded-lg shadow-xs transition-all cursor-pointer"
-        >
-          <Plus className="w-4 h-4" /> Thêm thành viên BCH
-        </button>
+        <div className="flex items-center gap-2 shrink-0">
+          <button title="Xuất Excel"
+            type="button"
+            onClick={handleExport}
+            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 rounded-lg shadow-2xs transition-all cursor-pointer"
+          >
+            <Download className="w-4 h-4 text-slate-500" /> Xuất Excel
+          </button>
+
+          {!isStaff && (
+            <>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".xlsx"
+                className="hidden"
+                onChange={handleFileChange}
+              />
+              <button title="Nhập từ Excel"
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 rounded-lg shadow-2xs transition-all cursor-pointer"
+              >
+                <Upload className="w-4 h-4 text-[#1F5FBF]" /> Nhập từ Excel
+              </button>
+
+              <button title="Thêm thành viên BCH"
+                type="button"
+                onClick={() => {
+                  setErrorMessage('');
+                  setIsAddModalOpen(true);
+                }}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-white bg-[#1F5FBF] hover:bg-[#154690] rounded-lg shadow-xs transition-all cursor-pointer"
+              >
+                <Plus className="w-4 h-4" /> Thêm thành viên BCH
+              </button>
+            </>
+          )}
+        </div>
       </div>
 
       {/* BỘ CHỌN ĐẦU TRANG: BCH ĐOÀN XÃ HOẶC CHI ĐOÀN & NHIỆM KỲ */}
@@ -193,7 +317,7 @@ export const CommitteePage: React.FC = () => {
             <optgroup label="31 Chi đoàn trực thuộc">
               {units.map(u => (
                 <option key={u.id} value={u.id}>
-                  {u.name} ({u.union_member_count} đoàn viên)
+                  {u.name} ({activeMemberCountByUnit.get(u.id) || 0} đoàn viên)
                 </option>
               ))}
             </optgroup>
@@ -202,7 +326,7 @@ export const CommitteePage: React.FC = () => {
 
         {/* Chọn nhiệm kỳ: Đang giữ chức vs Đã kết thúc */}
         <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-lg text-xs font-semibold self-start md:self-auto">
-          <button
+          <button title="Đang giữ chức"
             type="button"
             onClick={() => setTermStatusFilter('active')}
             className={`px-3 py-1.5 rounded-md transition-all cursor-pointer ${
@@ -213,7 +337,7 @@ export const CommitteePage: React.FC = () => {
           >
             Đang giữ chức
           </button>
-          <button
+          <button title="Đã kết thúc"
             type="button"
             onClick={() => setTermStatusFilter('ended')}
             className={`px-3 py-1.5 rounded-md transition-all cursor-pointer ${
@@ -224,7 +348,7 @@ export const CommitteePage: React.FC = () => {
           >
             Đã kết thúc
           </button>
-          <button
+          <button title="Tất cả"
             type="button"
             onClick={() => setTermStatusFilter('all')}
             className={`px-3 py-1.5 rounded-md transition-all cursor-pointer ${
@@ -273,7 +397,7 @@ export const CommitteePage: React.FC = () => {
           <p className="text-xs text-slate-400 mt-1">
             Không tìm thấy thành viên nào phù hợp với phạm vi đơn vị và trạng thái nhiệm kỳ đã chọn.
           </p>
-          <button
+          <button title="+ Bổ nhiệm thành viên mới"
             type="button"
             onClick={() => setIsAddModalOpen(true)}
             className="mt-4 px-4 py-2 text-xs font-bold text-[#1F5FBF] bg-blue-50 hover:bg-blue-100 rounded-lg cursor-pointer"
@@ -284,7 +408,7 @@ export const CommitteePage: React.FC = () => {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
           {sortedCommittees.map(comm => {
-            const member = getMemberById(comm.member_id);
+            const member = getMemberById(comm.member_id) || members.find(m => String(m.id) === String(comm.member_id));
             if (!member) return null;
 
             const isSec = comm.position === 'secretary';
@@ -326,11 +450,13 @@ export const CommitteePage: React.FC = () => {
                 </div>
 
                 <div className="relative mt-1">
-                  <img
+                  <Avatar
                     src={member.avatar_url}
-                    alt=""
-                    className={`w-16 h-16 rounded-full object-cover shadow-xs border-2 ${
-                      isSec ? 'border-blue-600' : isDeputy ? 'border-sky-500' : 'border-slate-300'
+                    name={member.full_name}
+                    seed={member.id}
+                    size={64}
+                    className={`shadow-xs ${
+                      isSec ? 'ring-2 ring-blue-600' : isDeputy ? 'ring-2 ring-sky-500' : 'ring-2 ring-slate-300'
                     }`}
                   />
                   {isStanding && (
@@ -372,13 +498,25 @@ export const CommitteePage: React.FC = () => {
                   </div>
                 </div>
 
-                {/* Nút Kết thúc nhiệm kỳ */}
+                {/* Nút Sửa chức vụ + Kết thúc nhiệm kỳ */}
                 {!isEnded && (
-                  <div className="w-full pt-2">
-                    <button
+                  <div className="w-full pt-2 flex gap-1.5">
+                    <button title="Sửa"
+                      type="button"
+                      onClick={() => {
+                        setEditingCommittee(comm);
+                        setEditPosition(comm.position);
+                        setEditIsStanding(comm.is_standing);
+                        setEditError('');
+                      }}
+                      className="flex-1 py-1.5 text-xs font-semibold text-[#1F5FBF] hover:bg-blue-50 rounded-lg border border-blue-200 transition-colors cursor-pointer inline-flex items-center justify-center gap-1"
+                    >
+                      <Edit2 className="w-3.5 h-3.5" /> Sửa
+                    </button>
+                    <button title="Kết thúc nhiệm kỳ"
                       type="button"
                       onClick={() => handleEndTerm(comm.id, member.full_name)}
-                      className="w-full py-1.5 text-xs font-semibold text-rose-600 hover:bg-rose-50 rounded-lg border border-rose-200 transition-colors cursor-pointer"
+                      className="flex-1 py-1.5 text-xs font-semibold text-rose-600 hover:bg-rose-50 rounded-lg border border-rose-200 transition-colors cursor-pointer"
                     >
                       Kết thúc nhiệm kỳ
                     </button>
@@ -387,6 +525,96 @@ export const CommitteePage: React.FC = () => {
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* IMPORT EXCEL MODAL */}
+      {isImportModalOpen && importResult && (
+        <div className="fixed inset-0 z-60 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 animate-in fade-in">
+          <div className="bg-white rounded-2xl max-w-2xl w-full max-h-[90vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden text-xs">
+            <div className="p-4 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
+              <div>
+                <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
+                  <FileSpreadsheet className="w-5 h-5 text-emerald-600" />
+                  Đối soát danh sách Ban Chấp hành ({importFileName})
+                </h3>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  Tổng: <b>{importResult.totalRows}</b> nhân sự • <span className="text-emerald-700 font-bold">{importResult.validCount} hợp lệ</span> • <span className="text-rose-600 font-bold">{importResult.invalidCount} lỗi / chưa có hồ sơ</span>
+                </p>
+              </div>
+              <button title="Đóng"
+                type="button"
+                onClick={() => setIsImportModalOpen(false)}
+                className="p-1 rounded-full text-slate-400 hover:text-slate-600"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-3 bg-blue-50/70 border-b border-blue-100 flex items-center justify-between gap-2">
+              <span className="text-blue-900 text-[11px]">
+                Lưu ý: Nhân sự bổ nhiệm vào BCH bắt buộc phải đã có hồ sơ trong danh sách đoàn viên.
+              </span>
+              <button title="Tải file mẫu chuẩn"
+                type="button"
+                onClick={() => downloadCommitteeTemplate(units)}
+                className="px-2.5 py-1 text-[11px] font-bold text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 rounded-md shrink-0 flex items-center gap-1"
+              >
+                <Download className="w-3.5 h-3.5 text-[#1F5FBF]" /> Tải file mẫu chuẩn
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4 space-y-2 max-h-[55vh]">
+              {importResult.rows.map((row: ParsedCommitteeRow) => (
+                <div
+                  key={row.rowNum}
+                  className={`p-2.5 rounded-lg border flex items-center justify-between gap-3 ${
+                    !row.isValid ? 'bg-rose-50 border-rose-200' : 'bg-emerald-50/50 border-emerald-200'
+                  }`}
+                >
+                  <div className="min-w-0">
+                    <p className="font-bold text-slate-900 truncate">
+                      Dòng {row.rowNum}: {row.memberName}
+                    </p>
+                    <p className="text-[11px] text-slate-500">
+                      Cấp bộ: <b>{row.scopeUnitName}</b> • Chức vụ: <b>{row.positionLabel}</b> {row.isStanding ? '(BTV)' : ''} • Bắt đầu: {row.termStart}
+                    </p>
+                    {row.error && <p className="text-[10px] font-bold text-rose-600 mt-0.5">{row.error}</p>}
+                  </div>
+
+                  <span className={`px-2 py-0.5 rounded text-[10px] font-bold shrink-0 ${
+                    !row.isValid ? 'bg-rose-200 text-rose-800' : 'bg-emerald-200 text-emerald-800'
+                  }`}>
+                    {!row.isValid ? 'Chưa hợp lệ' : 'Sẵn sàng bổ nhiệm'}
+                  </span>
+                </div>
+              ))}
+            </div>
+
+            <div className="p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-between">
+              <span className="text-slate-500 text-[11px]">
+                Sẵn sàng nạp {importResult.validCount} nhân sự hợp lệ
+              </span>
+              <div className="flex items-center gap-2">
+                <button title="Hủy"
+                  type="button"
+                  onClick={() => setIsImportModalOpen(false)}
+                  className="px-3 py-1.5 font-semibold text-slate-600 bg-white border border-slate-200 rounded-lg"
+                >
+                  Hủy
+                </button>
+                <button title="Đang xử lý"
+                  type="button"
+                  disabled={isImporting || importResult.validCount === 0}
+                  onClick={handleConfirmImport}
+                  className="px-4 py-2 font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg disabled:opacity-50 flex items-center gap-1.5"
+                >
+                  {isImporting && <Loader2 className="w-4 h-4 animate-spin" />}
+                  {isImporting ? 'Đang nạp…' : 'Xác nhận bổ nhiệm'}
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
 
@@ -399,7 +627,7 @@ export const CommitteePage: React.FC = () => {
                 <Plus className="w-4 h-4 text-[#1F5FBF]" />
                 Bổ nhiệm Thành viên Ban Chấp hành
               </h3>
-              <button
+              <button title="Đóng"
                 type="button"
                 onClick={() => setIsAddModalOpen(false)}
                 className="p-1 text-slate-400 hover:text-slate-700 rounded-lg cursor-pointer"
@@ -491,14 +719,14 @@ export const CommitteePage: React.FC = () => {
               </div>
 
               <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
-                <button
+                <button title="Hủy"
                   type="button"
                   onClick={() => setIsAddModalOpen(false)}
                   className="px-4 py-2 font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg cursor-pointer"
                 >
                   Hủy
                 </button>
-                <button
+                <button title="Xác nhận bổ nhiệm"
                   type="submit"
                   className="px-5 py-2 font-bold text-white bg-[#1F5FBF] hover:bg-[#154690] rounded-lg cursor-pointer shadow-xs"
                 >
@@ -506,6 +734,107 @@ export const CommitteePage: React.FC = () => {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: SỬA CHỨC VỤ / TƯ CÁCH THƯỜNG VỤ */}
+      {editingCommittee && (
+        <div className="fixed inset-0 z-60 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full p-5 space-y-4 shadow-2xl border border-slate-200 text-xs">
+            <div className="flex items-start justify-between">
+              <div>
+                <h3 className="text-sm font-bold text-slate-900">Sửa chức vụ Ban Chấp hành</h3>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  {getMemberById(editingCommittee.member_id)?.full_name} ·{' '}
+                  {editingCommittee.unit_id ? getUnitById(editingCommittee.unit_id)?.name : 'BCH Đoàn xã'}
+                </p>
+              </div>
+              <button title="Đóng" type="button" onClick={() => setEditingCommittee(null)} className="text-slate-400 hover:text-slate-700">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="font-bold text-slate-800 block mb-1">Chức vụ:</label>
+                <select
+                  value={editPosition}
+                  onChange={e => {
+                    const p = e.target.value as CommitteePosition;
+                    setEditPosition(p);
+                    if (p === 'secretary' || p === 'deputy_secretary') setEditIsStanding(true);
+                  }}
+                  className="w-full p-2.5 bg-white border border-slate-300 rounded-lg text-xs focus:outline-none focus:border-[#1F5FBF]"
+                >
+                  <option value="secretary">Bí thư</option>
+                  <option value="deputy_secretary">Phó Bí thư</option>
+                  <option value="committee_member">Ủy viên Ban Chấp hành</option>
+                </select>
+                <p className="text-[11px] text-slate-500 mt-1">
+                  Mỗi chi đoàn chỉ được có <b>01 Bí thư</b> đang giữ chức; Phó Bí thư và Ủy viên thì không giới hạn.
+                </p>
+              </div>
+
+              <label className="flex items-center gap-2 p-2.5 bg-slate-50 border border-slate-200 rounded-lg cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={editIsStanding}
+                  disabled={editPosition === 'secretary' || editPosition === 'deputy_secretary'}
+                  onChange={e => setEditIsStanding(e.target.checked)}
+                  className="w-4 h-4 rounded text-[#1F5FBF]"
+                />
+                <span className="font-semibold text-slate-800">
+                  Là thành viên <b>Ban Thường vụ</b>
+                </span>
+                {(editPosition === 'secretary' || editPosition === 'deputy_secretary') && (
+                  <span className="text-[10px] text-slate-500 ml-auto">(Bí thư/Phó Bí thư mặc định thuộc BTV)</span>
+                )}
+              </label>
+
+              {editError && (
+                <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-lg text-[11px] text-rose-800">
+                  {editError}
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
+              <button title="Hủy"
+                type="button"
+                onClick={() => setEditingCommittee(null)}
+                className="px-4 py-2 font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg"
+              >
+                Hủy
+              </button>
+              <button title="Lưu thay đổi"
+                type="button"
+                disabled={isSavingEdit}
+                onClick={async () => {
+                  setIsSavingEdit(true);
+                  setEditError('');
+                  try {
+                    const res = await updateCommitteeMember({
+                      committeeId: editingCommittee.id,
+                      position: editPosition,
+                      isStanding: editIsStanding,
+                    });
+                    if (res.success) {
+                      showToast({ title: 'Đã cập nhật chức vụ', type: 'success' });
+                      setEditingCommittee(null);
+                    } else {
+                      setEditError(res.message || 'Không lưu được');
+                    }
+                  } finally {
+                    setIsSavingEdit(false);
+                  }
+                }}
+                className="inline-flex items-center gap-1.5 px-4 py-2 font-bold text-white bg-[#1F5FBF] hover:bg-[#154690] rounded-lg disabled:opacity-60"
+              >
+                {isSavingEdit && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                Lưu thay đổi
+              </button>
+            </div>
           </div>
         </div>
       )}

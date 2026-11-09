@@ -33,7 +33,7 @@ export const ToastContainer: React.FC = () => {
 
             <div className="flex items-center gap-2 shrink-0 self-center">
               {toast.canUndo && toast.onUndo && (
-                <button
+                <button title="Hoàn tác"
                   type="button"
                   onClick={() => {
                     toast.onUndo?.();
@@ -45,7 +45,7 @@ export const ToastContainer: React.FC = () => {
                   Hoàn tác
                 </button>
               )}
-              <button
+              <button title="Đóng"
                 type="button"
                 onClick={() => removeToast(toast.id)}
                 className="text-slate-400 hover:text-slate-200 p-1 rounded-md transition-colors cursor-pointer"

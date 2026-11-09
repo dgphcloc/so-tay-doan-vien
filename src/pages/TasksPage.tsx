@@ -1,9 +1,11 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { useApp } from '../context/AppContext';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { TaskQrModal } from '../components/tasks/TaskQrModal';
 import { TaskParticipantsPanel } from '../components/tasks/TaskParticipantsPanel';
 import { TaskCriteriaModal } from '../components/tasks/TaskCriteriaModal';
+import { UnitReportModal } from '../components/tasks/UnitReportModal';
+import { UnitReportsPanel } from '../components/tasks/UnitReportsPanel';
 import {
   CheckSquare,
   QrCode,
@@ -33,11 +35,16 @@ import {
   Building2,
   Info,
   ExternalLink,
+  Edit2,
+  Loader2,
 } from 'lucide-react';
 import { Task, TaskStatus, Unit, SubCriterion } from '../types';
 import { formatDateVN, formatDateTimeVN, getRelativeDate } from '../mock/data';
 import { DeadlineWarningBadge, ReviewStatusBadge } from '../components/common/StatusBadge';
 import { canCreateTask, canManageTasks } from '../utils/permissions';
+import { isSubCriterionApplicableToUnit } from '../utils/criteriaAssignment';
+import { parseMapLink, isValidLatLng, isValidRadius, toLocalInput, RADIUS_MIN_M, RADIUS_MAX_M } from '../utils/geo';
+import { getGpsPosition } from '../utils/evidence';
 
 export const TasksPage: React.FC = () => {
   const {
@@ -47,11 +54,13 @@ export const TasksPage: React.FC = () => {
     taskSubCriteria,
     taskRegistrations,
     units,
+    yearlySettings,
     members,
     criteriaSections,
     criteria,
     subCriteria,
     createTask,
+    updateTask,
     closeTask,
     countUnitsWithoutResult,
     deleteTask,
@@ -67,6 +76,31 @@ export const TasksPage: React.FC = () => {
   } = useApp();
 
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  // Mở form tạo nhiệm vụ sẵn với tiêu chí nguồn khi vào từ trang Tiêu chí / KPI.
+  // Chờ subCriteria nạp xong mới xử lý (dữ liệu đến bất đồng bộ từ Supabase).
+  useEffect(() => {
+    const fromCriterion = searchParams.get('fromCriterion');
+    if (!fromCriterion) return;
+    if (subCriteria.length === 0) return;   // chưa có dữ liệu, đợi lần chạy sau
+    const sub = subCriteria.find(sc => sc.id === fromCriterion);
+    if (!sub) {
+      // Không tìm thấy tiêu chí -> báo rõ thay vì im lặng
+      showToast({
+        title: 'Không tìm thấy tiêu chí',
+        description: 'Tiêu chí có thể đã bị xóa hoặc chưa được nạp xong. Vui lòng thử lại.',
+        type: 'error',
+      });
+      setSearchParams({}, { replace: true });
+      return;
+    }
+    setSubCriteriaContributions([{ sub_criterion_id: fromCriterion, contribution_score: sub.max_score ?? 3 }]);
+    setIsCreateModalOpen(true);
+    setStep(3);
+    setSearchParams({}, { replace: true });
+    /* eslint-disable-next-line */
+  }, [searchParams, subCriteria]);
 
   // Phân quyền nhiệm vụ
   const canCreate = canCreateTask(currentRole);
@@ -80,7 +114,7 @@ export const TasksPage: React.FC = () => {
 
   // Selected task for detail view
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
-  const [detailTab, setDetailTab] = useState<'overview' | 'units' | 'registrations' | 'results'>('overview');
+  const [detailTab, setDetailTab] = useState<'overview' | 'units' | 'registrations' | 'results' | 'unitReports'>('overview');
 
   // Confirmation modals
   const [closeConfirmTaskId, setCloseConfirmTaskId] = useState<string | null>(null);
@@ -99,6 +133,8 @@ export const TasksPage: React.FC = () => {
   const [formMaxScore, setFormMaxScore] = useState<number>(10);
   const [qrTask, setQrTask] = useState<{ id: string; title: string } | null>(null);
   const [criteriaTaskId, setCriteriaTaskId] = useState<string | null>(null);
+  /** Nhiệm vụ đang mở modal nộp báo cáo (chỉ bí thư / phó bí thư chi đoàn). */
+  const [reportTask, setReportTask] = useState<{ id: string; title: string } | null>(null);
   const [formSubmitScope, setFormSubmitScope] = useState<'assigned' | 'open'>('assigned');
   const [savingTask, setSavingTask] = useState(false);
   const [closeConfirmText, setCloseConfirmText] = useState('');
@@ -106,8 +142,13 @@ export const TasksPage: React.FC = () => {
   const [closeWarning, setCloseWarning] = useState<{ assigned: number; submitted: number; missing: string[] } | null>(null);
   const [loadingCloseInfo, setLoadingCloseInfo] = useState(false);
   const [formReminderDays, setFormReminderDays] = useState<number[]>([7, 3, 1]);
-  const [formLat, setFormLat] = useState<number | null>(9.1824);
-  const [formLng, setFormLng] = useState<number | null>(105.1528);
+  const [formLat, setFormLat] = useState<number | null>(null);
+  const [formLng, setFormLng] = useState<number | null>(null);
+  // Định vị điểm danh (chỉ dùng khi đã có toạ độ)
+  const [formMapLink, setFormMapLink] = useState('');
+  const [formRadiusM, setFormRadiusM] = useState<number | null>(null);
+  const [formAttendanceOpen, setFormAttendanceOpen] = useState('');
+  const [formAttendanceClose, setFormAttendanceClose] = useState('');
 
   // Step 2 State: Selected units
   const [selectedUnitIds, setSelectedUnitIds] = useState<string[]>([]);
@@ -117,6 +158,65 @@ export const TasksPage: React.FC = () => {
   const [subCriteriaContributions, setSubCriteriaContributions] = useState<
     Array<{ sub_criterion_id: string; contribution_score: number }>
   >([]);
+
+  /**
+   * Tiêu chí con nào ĐOÀN XÃ ĐÃ GIAO cho ít nhất một chi đoàn đang được chọn.
+   *
+   * Bước 3/4 chỉ cho gắn các tiêu chí nằm trong tập này — tránh việc cán bộ
+   * gắn nhiệm vụ vào tiêu chí mà không chi đoàn nào có trách nhiệm thực hiện.
+   * Dùng helper sẵn có `isSubCriterionApplicableToUnit` để hiểu cả trường cũ
+   * (unit_id / unit_type_id) lẫn mảng mới (unit_ids / unit_type_ids).
+   */
+  const assignableSubIds = useMemo(() => {
+    const chosen = units.filter(u => selectedUnitIds.includes(u.id));
+    if (chosen.length === 0) return new Set<string>();
+    return new Set(
+      subCriteria
+        .filter(sc => chosen.some(u => isSubCriterionApplicableToUnit(sc, u)))
+        .map(sc => sc.id)
+    );
+  }, [units, selectedUnitIds, subCriteria]);
+
+  // Edit Task State
+  const [editingTask, setEditingTask] = useState<Task | null>(null);
+  const [editTitle, setEditTitle] = useState('');
+  const [editContent, setEditContent] = useState('');
+  const [editDueDate, setEditDueDate] = useState('');
+  const [editTarget, setEditTarget] = useState('');
+  const [editSubmitScope, setEditSubmitScope] = useState<'assigned' | 'open'>('assigned');
+  const [editSelectedUnitIds, setEditSelectedUnitIds] = useState<string[]>([]);
+  const [isUpdatingTask, setIsUpdatingTask] = useState(false);
+  // Định vị điểm danh khi sửa
+  const [editLat, setEditLat] = useState<number | null>(null);
+  const [editLng, setEditLng] = useState<number | null>(null);
+  const [editRadiusM, setEditRadiusM] = useState<number | null>(null);
+  const [editAttendanceOpen, setEditAttendanceOpen] = useState('');
+  const [editAttendanceClose, setEditAttendanceClose] = useState('');
+
+  /**
+   * Bản đồ: tiêu chí con -> tập chi đoàn ĐÃ CÓ nhiệm vụ dùng tiêu chí đó.
+   *
+   * Quy tắc "mỗi chi đoàn 1 nhiệm vụ / tiêu chí". Khi SỬA nhiệm vụ phải bỏ qua
+   * chính nhiệm vụ đang sửa, nếu không nó sẽ tự chặn mình.
+   */
+  const subIdToUsedUnitIds = useMemo(() => {
+    const skipTaskId = editingTask?.id ?? null;
+    const taskIdToUnits = new Map<string, string[]>();
+    for (const tu of taskUnits) {
+      const arr = taskIdToUnits.get(tu.task_id) ?? [];
+      arr.push(tu.unit_id);
+      taskIdToUnits.set(tu.task_id, arr);
+    }
+    const m = new Map<string, Set<string>>();
+    for (const tsc of taskSubCriteria) {
+      if (skipTaskId && tsc.task_id === skipTaskId) continue;
+      const usedUnits = taskIdToUnits.get(tsc.task_id) ?? [];
+      const cur = m.get(tsc.sub_criterion_id) ?? new Set<string>();
+      for (const u of usedUnits) cur.add(u);
+      m.set(tsc.sub_criterion_id, cur);
+    }
+    return m;
+  }, [taskUnits, taskSubCriteria, editingTask]);
 
   // Bộ lọc nhiệm vụ theo vai trò: all | mine (do tôi tạo) | myunit (chi đoàn tôi) | joined (tôi tham gia)
   const [scopeFilter, setScopeFilter] = useState<'all' | 'mine' | 'myunit' | 'joined'>('all');
@@ -183,8 +283,12 @@ export const TasksPage: React.FC = () => {
     setFormEvaluationCriteria('Hình ảnh nghiệm thu rõ mặt, có định vị GPS tại hiện trường.');
     setFormMaxScore(10);
     setFormSubmitScope('assigned');    setFormReminderDays([7, 3, 1]);
-    setFormLat(9.1824);
-    setFormLng(105.1528);
+    setFormLat(null);
+    setFormLng(null);
+    setFormMapLink('');
+    setFormRadiusM(null);
+    setFormAttendanceOpen('');
+    setFormAttendanceClose('');
     if (isUnitSecretary) {
       // Bí thư chi đoàn: chỉ giao cho chi đoàn mình
       setSelectedUnitIds(myUnitId ? [myUnitId] : []);
@@ -217,17 +321,43 @@ export const TasksPage: React.FC = () => {
   };
 
   // Step 3 Criteria toggle
+  // Mỗi nhiệm vụ chỉ gắn ĐÚNG 1 tiêu chí nguồn (quan hệ 1-1).
+  // Điểm đóng góp = max_score của tiêu chí, không cho sửa tay.
   const handleToggleSubCriterion = (subId: string) => {
     const existing = subCriteriaContributions.find(sc => sc.sub_criterion_id === subId);
     if (existing) {
-      setSubCriteriaContributions(prev => prev.filter(sc => sc.sub_criterion_id !== subId));
-    } else {
-      const sub = subCriteria.find(s => s.id === subId);
-      setSubCriteriaContributions(prev => [
-        ...prev,
-        { sub_criterion_id: subId, contribution_score: Math.min(3, sub?.max_score || 3) },
-      ]);
+      setSubCriteriaContributions([]);
+      return;
     }
+
+    // Phòng thủ: UI đã disable nhưng vẫn chặn ở đây để không lọt qua đường khác.
+    if (!assignableSubIds.has(subId)) {
+      showToast({
+        title: 'Tiêu chí chưa được giao',
+        description: 'Đoàn xã chưa giao tiêu chí này cho chi đoàn đã chọn.',
+        type: 'error',
+      });
+      return;
+    }
+    const usedUnits = subIdToUsedUnitIds.get(subId);
+    const conflict = selectedUnitIds.filter(uid => usedUnits?.has(uid));
+    if (conflict.length > 0 && conflict.length === selectedUnitIds.length) {
+      const names = conflict
+        .map(uid => units.find(u => u.id === uid)?.name)
+        .filter(Boolean)
+        .join(', ');
+      showToast({
+        title: 'Tiêu chí đã có nhiệm vụ',
+        description: `Mỗi chi đoàn chỉ có một nhiệm vụ cho mỗi tiêu chí. Đã tồn tại cho: ${names}.`,
+        type: 'error',
+      });
+      return;
+    }
+
+    const sub = subCriteria.find(s => s.id === subId);
+    setSubCriteriaContributions([
+      { sub_criterion_id: subId, contribution_score: sub?.max_score ?? 3 },
+    ]);
   };
 
   const handleUpdateContributionScore = (subId: string, score: number) => {
@@ -254,6 +384,50 @@ export const TasksPage: React.FC = () => {
       return;
     }
 
+    // Bí thư chi đoàn BẮT BUỘC chọn tiêu chí nguồn khi phát động
+    if (isUnitSecretary && statusToSet === 'published' && subCriteriaContributions.length === 0) {
+      showToast({
+        title: 'Chưa chọn tiêu chí nguồn',
+        description: 'Bí thư chi đoàn phải gắn nhiệm vụ với một tiêu chí được Đoàn xã giao (ở bước "Gắn tiêu chí").',
+        type: 'error',
+      });
+      setStep(3);
+      return;
+    }
+
+    // Chặn ở tầng logic (không chỉ UI): tiêu chí phải được Đoàn xã giao cho
+    // ít nhất một chi đoàn đã chọn, và chưa có nhiệm vụ khác dùng tiêu chí đó
+    // cho bất kỳ chi đoàn nào trong danh sách đã chọn.
+    if (subCriteriaContributions.length > 0) {
+      const subId = subCriteriaContributions[0].sub_criterion_id;
+
+      if (!assignableSubIds.has(subId)) {
+        showToast({
+          title: 'Tiêu chí chưa được giao',
+          description: 'Tiêu chí này không được Đoàn xã giao cho chi đoàn đã chọn. Vào trang Tiêu chí để phân công trước.',
+          type: 'error',
+        });
+        setStep(3);
+        return;
+      }
+
+      const usedUnits = subIdToUsedUnitIds.get(subId);
+      const conflict = selectedUnitIds.filter(uid => usedUnits?.has(uid));
+      if (conflict.length > 0) {
+        const names = conflict
+          .map(uid => units.find(u => u.id === uid)?.name)
+          .filter(Boolean)
+          .join(', ');
+        showToast({
+          title: 'Tiêu chí đã có nhiệm vụ',
+          description: `Mỗi chi đoàn chỉ có một nhiệm vụ cho mỗi tiêu chí. Đã tồn tại cho: ${names}.`,
+          type: 'error',
+        });
+        setStep(3);
+        return;
+      }
+    }
+
     setSavingTask(true);
     try {
       await createTask(
@@ -265,10 +439,14 @@ export const TasksPage: React.FC = () => {
           reminder_days: formReminderDays,
           target: formTarget.trim() || 'Hoàn thành chỉ tiêu được giao',
           evaluation_criteria: formEvaluationCriteria.trim() || 'Có biên bản và hình ảnh nghiệm thu',
-          max_score: Number(formMaxScore),
+          max_score: subCriteriaContributions[0]?.contribution_score ?? 0,
+          source_sub_criterion_id: subCriteriaContributions[0]?.sub_criterion_id ?? null,
           submit_scope: formSubmitScope,
           lat: formLat,
           lng: formLng,
+          radius_m: formRadiusM,
+          attendance_open_at: formAttendanceOpen ? new Date(formAttendanceOpen).toISOString() : null,
+          attendance_close_at: formAttendanceClose ? new Date(formAttendanceClose).toISOString() : null,
         },
         selectedUnitIds,
         subCriteriaContributions
@@ -288,6 +466,59 @@ export const TasksPage: React.FC = () => {
       });
     } finally {
       setSavingTask(false);
+    }
+  };
+
+  // Mở modal chỉnh sửa nhiệm vụ
+  const handleOpenEdit = (task: Task) => {
+    setEditingTask(task);
+    setEditTitle(task.title);
+    setEditContent(task.content);
+    setEditDueDate(task.due_date ? String(task.due_date).slice(0, 10) : '');
+    setEditTarget(task.target || '');
+    setEditSubmitScope(task.submit_scope || 'assigned');
+    // Định vị điểm danh: nạp giá trị hiện có để sửa được
+    setEditLat(task.lat ?? null);
+    setEditLng(task.lng ?? null);
+    setEditRadiusM(task.radius_m ?? null);
+    setEditAttendanceOpen(toLocalInput(task.attendance_open_at));
+    setEditAttendanceClose(toLocalInput(task.attendance_close_at));
+    const assignedUnits = taskUnits.filter(tu => tu.task_id === task.id).map(tu => tu.unit_id);
+    setEditSelectedUnitIds(assignedUnits);
+  };
+
+  // Lưu chỉnh sửa nhiệm vụ
+  const handleSaveEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingTask || !editTitle.trim() || !editDueDate) return;
+    setIsUpdatingTask(true);
+    try {
+      const res = await updateTask(
+        editingTask.id,
+        {
+          title: editTitle.trim(),
+          content: editContent.trim(),
+          due_date: new Date(editDueDate).toISOString(),
+          target: editTarget.trim(),
+          submit_scope: editSubmitScope,
+          lat: editLat,
+          lng: editLng,
+          radius_m: editRadiusM,
+          attendance_open_at: editAttendanceOpen ? new Date(editAttendanceOpen).toISOString() : null,
+          attendance_close_at: editAttendanceClose ? new Date(editAttendanceClose).toISOString() : null,
+        },
+        editSelectedUnitIds
+      );
+      if (res && res.success === false) {
+        showToast({ title: 'Không lưu được', description: res.message, type: 'error' });
+      } else {
+        showToast({ title: 'Đã cập nhật nhiệm vụ thành công', type: 'success' });
+        setEditingTask(null);
+      }
+    } catch (err) {
+      showToast({ title: 'Có lỗi xảy ra', description: err instanceof Error ? err.message : '', type: 'error' });
+    } finally {
+      setIsUpdatingTask(false);
     }
   };
 
@@ -415,7 +646,7 @@ export const TasksPage: React.FC = () => {
         </div>
 
         {canCreate && (
-          <button
+          <button title="Tạo nhiệm vụ mới"
             type="button"
             onClick={handleOpenCreateModal}
             className="inline-flex items-center gap-2 px-4 py-2 text-xs md:text-sm font-bold text-white bg-[#1F5FBF] hover:bg-[#154690] rounded-lg transition-all shadow-xs cursor-pointer active:scale-95 shrink-0"
@@ -427,7 +658,7 @@ export const TasksPage: React.FC = () => {
 
       {/* Tabs Nháp | Đã đăng | Đã đóng */}
       <div className="flex items-center gap-2 border-b border-slate-200">
-        <button
+        <button title="Đã đăng"
           type="button"
           onClick={() => setActiveTab('published')}
           className={`flex items-center gap-2 px-4 py-2.5 text-xs md:text-sm font-bold border-b-2 transition-all cursor-pointer ${
@@ -446,7 +677,7 @@ export const TasksPage: React.FC = () => {
           </span>
         </button>
 
-        <button
+        <button title="Bản nháp"
           type="button"
           onClick={() => setActiveTab('draft')}
           className={`flex items-center gap-2 px-4 py-2.5 text-xs md:text-sm font-bold border-b-2 transition-all cursor-pointer ${
@@ -465,7 +696,7 @@ export const TasksPage: React.FC = () => {
           </span>
         </button>
 
-        <button
+        <button title="Đã đóng"
           type="button"
           onClick={() => setActiveTab('closed')}
           className={`flex items-center gap-2 px-4 py-2.5 text-xs md:text-sm font-bold border-b-2 transition-all cursor-pointer ${
@@ -507,7 +738,7 @@ export const TasksPage: React.FC = () => {
             ] as const).map(f => (
               <button
                 key={f.id}
-                type="button"
+                type="button" title="Lọc nhiệm vụ theo trạng thái"
                 onClick={() => setScopeFilter(f.id)}
                 className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors cursor-pointer ${
                   scopeFilter === f.id ? 'bg-[#1F5FBF] text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
@@ -530,7 +761,6 @@ export const TasksPage: React.FC = () => {
                 <th className="p-3.5 whitespace-nowrap">Hạn chót</th>
                 <th className="p-3.5 min-w-44">Tiến độ (Đã nộp/Giao)</th>
                 <th className="p-3.5 text-center">Chờ duyệt</th>
-                <th className="p-3.5 text-center whitespace-nowrap">Điểm tối đa</th>
                 <th className="p-3.5 whitespace-nowrap">Người giao</th>
                 <th className="p-3.5 text-right whitespace-nowrap">Thao tác</th>
               </tr>
@@ -593,14 +823,35 @@ export const TasksPage: React.FC = () => {
                         )}
                       </td>
 
-                      <td className="p-3.5 text-center font-bold text-[#1F5FBF] whitespace-nowrap">
-                        {task.max_score} điểm
-                      </td>
-
                       <td className="p-3.5 text-slate-600 whitespace-nowrap">{assigner?.full_name || 'Bí thư Đoàn'}</td>
 
                       <td className="p-3.5 text-right whitespace-nowrap" onClick={e => e.stopPropagation()}>
                         <div className="flex items-center justify-end gap-1.5">
+                          {/* Nút Nộp báo cáo: CHỈ bí thư / phó bí thư của chi đoàn được giao */}
+                          {isUnitSecretary && myUnitId
+                            && taskUnits.some(tu => tu.task_id === task.id && tu.unit_id === myUnitId) && (
+                            <button
+                              type="button"
+                              onClick={() => setReportTask({ id: task.id, title: task.title })}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-bold text-[#1F5FBF] bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg cursor-pointer"
+                              title="Nộp báo cáo riêng của Bí thư chi đoàn gửi Bí thư Đoàn xã"
+                            >
+                              <Send className="w-3 h-3" /> Báo cáo
+                            </button>
+                          )}
+
+                          {/* Nút Chỉnh sửa */}
+                          {canManage && (
+                            <button
+                              type="button"
+                              onClick={() => handleOpenEdit(task)}
+                              className="p-1.5 text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg cursor-pointer"
+                              title="Chỉnh sửa nhiệm vụ"
+                            >
+                              <Edit2 className="w-4 h-4" />
+                            </button>
+                          )}
+
                           {/* Nút Nhân bản */}
                           <button
                             type="button"
@@ -697,8 +948,19 @@ export const TasksPage: React.FC = () => {
               </div>
 
               <div className="flex items-center gap-2 shrink-0">
-                {selectedTask.status === 'published' && (
+                {isUnitSecretary && myUnitId
+                  && taskUnits.some(tu => tu.task_id === selectedTask.id && tu.unit_id === myUnitId) && (
                   <button
+                    type="button"
+                    onClick={() => setReportTask({ id: selectedTask.id, title: selectedTask.title })}
+                    title="Nộp báo cáo riêng của Bí thư chi đoàn gửi Bí thư Đoàn xã"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-[#1F5FBF] bg-blue-50 border border-blue-200 hover:bg-blue-100 rounded-lg cursor-pointer"
+                  >
+                    <Send className="w-3.5 h-3.5" /> Nộp báo cáo
+                  </button>
+                )}
+                {selectedTask.status === 'published' && (
+                  <button title="Tạo QR"
                     type="button"
                     onClick={() => setQrTask({ id: selectedTask.id, title: selectedTask.title })}
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-white bg-[#1F5FBF] hover:bg-[#1a4fa0] rounded-lg shadow-xs cursor-pointer"
@@ -707,7 +969,7 @@ export const TasksPage: React.FC = () => {
                   </button>
                 )}
                 {selectedTask.status === 'published' && canManage && (
-                  <button
+                  <button title="Nhắc tất cả chưa nộp"
                     type="button"
                     onClick={() => {
                       remindAllUnsubmitted(selectedTask.id);
@@ -718,7 +980,7 @@ export const TasksPage: React.FC = () => {
                   </button>
                 )}
                 {selectedTask.status === 'published' && canManage && (
-                  <button
+                  <button title="Đóng nhiệm vụ"
                     type="button"
                     onClick={() => setCloseConfirmTaskId(selectedTask.id)}
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg cursor-pointer"
@@ -726,7 +988,7 @@ export const TasksPage: React.FC = () => {
                     <Archive className="w-3.5 h-3.5" /> Đóng nhiệm vụ
                   </button>
                 )}
-                <button
+                <button title="Đóng"
                   type="button"
                   onClick={() => setSelectedTask(null)}
                   className="p-1 rounded-full text-slate-400 hover:text-slate-600 hover:bg-slate-200 cursor-pointer"
@@ -738,7 +1000,7 @@ export const TasksPage: React.FC = () => {
 
             {/* 4 Tabs Chi tiết */}
             <div className="flex items-center gap-4 px-5 border-b border-slate-200 bg-white text-xs font-bold shrink-0">
-              <button
+              <button title="Tổng quan"
                 type="button"
                 onClick={() => setDetailTab('overview')}
                 className={`py-3 border-b-2 transition-colors cursor-pointer ${
@@ -750,7 +1012,7 @@ export const TasksPage: React.FC = () => {
                 Tổng quan
               </button>
 
-              <button
+              <button title="Số chi đoàn được giao nhiệm vụ"
                 type="button"
                 onClick={() => setDetailTab('units')}
                 className={`py-3 border-b-2 transition-colors cursor-pointer ${
@@ -763,7 +1025,7 @@ export const TasksPage: React.FC = () => {
               </button>
 
               {canSeeParticipants && (
-              <button
+              <button title="Số đoàn viên đã đăng ký tham gia"
                 type="button"
                 onClick={() => setDetailTab('registrations')}
                 className={`py-3 border-b-2 transition-colors cursor-pointer ${
@@ -776,7 +1038,7 @@ export const TasksPage: React.FC = () => {
               </button>
               )}
 
-              <button
+              <button title="Xem kết quả và minh chứng đã nộp"
                 type="button"
                 onClick={() => setDetailTab('results')}
                 className={`py-3 border-b-2 transition-colors cursor-pointer ${
@@ -786,6 +1048,18 @@ export const TasksPage: React.FC = () => {
                 }`}
               >
                 Kết quả & Minh chứng ({resultsForSelected.length})
+              </button>
+
+              <button title="Xem báo cáo riêng của Bí thư từng chi đoàn và duyệt"
+                type="button"
+                onClick={() => setDetailTab('unitReports')}
+                className={`py-3 border-b-2 transition-colors cursor-pointer ${
+                  detailTab === 'unitReports'
+                    ? 'border-[#1F5FBF] text-[#1F5FBF]'
+                    : 'border-transparent text-slate-500 hover:text-slate-900'
+                }`}
+              >
+                Báo cáo chi đoàn
               </button>
             </div>
 
@@ -843,7 +1117,7 @@ export const TasksPage: React.FC = () => {
                       <Award className="w-4 h-4 text-amber-500" />
                       Tiêu chí con gắn với nhiệm vụ:
                       {canManage && (
-                        <button
+                        <button title="Tiêu chí"
                           type="button"
                           onClick={() => setCriteriaTaskId(selectedTask.id)}
                           className="ml-auto inline-flex items-center gap-1 px-2 py-1 text-[11px] font-bold text-[#1F5FBF] bg-blue-50 hover:bg-blue-100 rounded-lg"
@@ -901,7 +1175,7 @@ export const TasksPage: React.FC = () => {
                             </span>
 
                             {row.statusLabel === 'Chưa nộp' && (
-                              <button
+                              <button title="Nhắc nhở"
                                 type="button"
                                 onClick={() => remindUnit(selectedTask.id, row.unit.id)}
                                 className="px-2.5 py-1 text-[11px] font-semibold text-[#1F5FBF] bg-blue-50 hover:bg-blue-100 rounded-md cursor-pointer transition-colors"
@@ -949,7 +1223,7 @@ export const TasksPage: React.FC = () => {
 
                             <div className="flex items-center gap-3">
                               <ReviewStatusBadge status={res.status} />
-                              <button
+                              <button title="Xem duyệt"
                                 type="button"
                                 className="px-2.5 py-1 text-xs font-semibold text-[#1F5FBF] bg-blue-50 rounded-lg hover:bg-blue-100 flex items-center gap-1"
                               >
@@ -962,6 +1236,10 @@ export const TasksPage: React.FC = () => {
                     )}
                   </div>
                 </div>
+              )}
+
+              {detailTab === 'unitReports' && (
+                <UnitReportsPanel taskId={selectedTask.id} />
               )}
             </div>
           </div>
@@ -978,7 +1256,7 @@ export const TasksPage: React.FC = () => {
                 <h3 className="text-base font-bold text-slate-900">Tạo mới Nhiệm vụ Thanh niên</h3>
                 <p className="text-xs text-slate-500">Bước {step}/4: {step === 1 ? 'Thông tin chung' : step === 2 ? 'Chọn Chi đoàn' : step === 3 ? 'Gắn tiêu chí thi đua' : 'Xem lại & Phát động'}</p>
               </div>
-              <button
+              <button title="Đóng"
                 type="button"
                 onClick={() => setIsCreateModalOpen(false)}
                 className="text-slate-400 hover:text-slate-700 p-1"
@@ -1045,26 +1323,16 @@ export const TasksPage: React.FC = () => {
                     </div>
 
                     <div>
-                      <label className="font-bold text-slate-800 block mb-1">Điểm tối đa:</label>
-                      <input
-                        type="number"
-                        value={formMaxScore}
-                        onChange={e => setFormMaxScore(Number(e.target.value))}
-                        className="w-full p-2 bg-slate-50 border border-slate-300 rounded-lg text-xs focus:outline-none focus:border-[#1F5FBF] font-bold text-[#1F5FBF]"
-                      />
+                      <label className="font-bold text-slate-800 block mb-1">Phạm vi nộp minh chứng cá nhân:</label>
+                      <select
+                        value={formSubmitScope}
+                        onChange={e => setFormSubmitScope(e.target.value as 'assigned' | 'open')}
+                        className="w-full p-2 bg-slate-50 border border-slate-300 rounded-lg text-xs focus:outline-none focus:border-[#1F5FBF]"
+                      >
+                        <option value="assigned">Chỉ đoàn viên thuộc chi đoàn được giao</option>
+                        <option value="open">Mở toàn xã (mọi đoàn viên đều được nộp)</option>
+                      </select>
                     </div>
-                  </div>
-
-                  <div>
-                    <label className="font-bold text-slate-800 block mb-1">Phạm vi nộp minh chứng cá nhân:</label>
-                    <select
-                      value={formSubmitScope}
-                      onChange={e => setFormSubmitScope(e.target.value as 'assigned' | 'open')}
-                      className="w-full p-2 bg-slate-50 border border-slate-300 rounded-lg text-xs focus:outline-none focus:border-[#1F5FBF]"
-                    >
-                      <option value="assigned">Chỉ đoàn viên thuộc chi đoàn được giao</option>
-                      <option value="open">Ai cũng tham gia được</option>
-                    </select>
                   </div>
 
                   <div>
@@ -1089,37 +1357,153 @@ export const TasksPage: React.FC = () => {
                     />
                   </div>
 
-                  {/* Vị trí tùy chọn (khung bản đồ giả lập) */}
-                  <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
-                    <div className="flex items-center justify-between">
+                  {/* Định vị điểm danh (tuỳ chọn) */}
+                  <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-2.5">
+                    <div className="flex items-center justify-between gap-2">
                       <label className="font-bold text-slate-800 flex items-center gap-1.5">
-                        <MapPin className="w-4 h-4 text-rose-500" /> Vị trí định vị toạ độ hiện trường (tuỳ chọn):
+                        <MapPin className="w-4 h-4 text-rose-500" /> Định vị điểm danh (tuỳ chọn):
                       </label>
-                      <span className="text-[11px] text-slate-400">
-                        {formLat}, {formLng}
-                      </span>
+                      {(formLat !== null || formLng !== null) && (
+                        <button
+                          type="button"
+                          onClick={() => { setFormLat(null); setFormLng(null); }}
+                          title="Bỏ toạ độ — nhiệm vụ sẽ không kiểm tra khoảng cách khi đoàn viên nộp"
+                          className="text-[11px] font-bold text-rose-600 hover:underline"
+                        >
+                          Bỏ định vị
+                        </button>
+                      )}
                     </div>
 
-                    <div
-                      onClick={() => {
-                        // Random slightly around Tan Phu
-                        const newLat = 9.18 + Math.random() * 0.01;
-                        const newLng = 105.15 + Math.random() * 0.01;
-                        setFormLat(parseFloat(newLat.toFixed(4)));
-                        setFormLng(parseFloat(newLng.toFixed(4)));
-                        showToast({ title: 'Đã ghim toạ độ mới', type: 'info' });
-                      }}
-                      className="relative h-24 bg-blue-100/60 rounded-lg border border-blue-200 overflow-hidden flex items-center justify-center cursor-pointer hover:bg-blue-100 transition-colors"
-                      title="Bấm vào bản đồ để chọn toạ độ ghim"
-                    >
-                      <div className="text-center space-y-1">
-                        <MapPin className="w-6 h-6 text-rose-600 mx-auto animate-bounce" />
-                        <span className="text-[11px] font-semibold text-slate-700">
-                          Toạ độ trung tâm xã Hòa Bình: ({formLat}, {formLng})
-                        </span>
-                        <p className="text-[10px] text-slate-400">Nhấp để thay đổi vị trí ghim</p>
-                      </div>
+                    <p className="text-[11px] text-slate-500">
+                      Nếu đặt toạ độ, hệ thống sẽ tính khoảng cách từ ảnh minh chứng của đoàn viên
+                      tới điểm này và gắn nhãn <b>Trong phạm vi</b> / <b>Ngoài phạm vi</b> để bạn cân nhắc khi duyệt.
+                      Để trống nếu không cần điểm danh.
+                    </p>
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            const pos = await getGpsPosition();
+                            setFormLat(Number(pos.lat.toFixed(6)));
+                            setFormLng(Number(pos.lng.toFixed(6)));
+                            showToast({ title: 'Đã lấy vị trí hiện tại', type: 'success' });
+                          } catch (e) {
+                            showToast({ title: 'Không lấy được vị trí', description: e instanceof Error ? e.message : '', type: 'error' });
+                          }
+                        }}
+                        title="Lấy toạ độ từ thiết bị — cán bộ đứng tại địa điểm tổ chức rồi bấm"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-bold text-white bg-[#1F5FBF] hover:bg-[#154690] rounded-lg"
+                      >
+                        <MapPin className="w-3.5 h-3.5" /> Lấy vị trí hiện tại
+                      </button>
+
+                      <input
+                        type="text"
+                        value={formMapLink}
+                        onChange={e => {
+                          setFormMapLink(e.target.value);
+                          const coords = parseMapLink(e.target.value);
+                          if (coords) {
+                            setFormLat(coords.lat);
+                            setFormLng(coords.lng);
+                          }
+                        }}
+                        placeholder="Hoặc dán link Google Maps…"
+                        title="Dán link Google Maps để tự tách toạ độ"
+                        className="flex-1 min-w-[12rem] p-1.5 bg-white border border-slate-300 rounded-lg text-[11px] focus:outline-none focus:border-[#1F5FBF]"
+                      />
                     </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        value={formLat ?? ''}
+                        onChange={e => setFormLat(e.target.value.trim() === '' ? null : Number(e.target.value))}
+                        placeholder="Vĩ độ (lat)"
+                        title="Vĩ độ điểm tổ chức, -90..90"
+                        className="p-1.5 bg-white border border-slate-300 rounded-lg text-[11px] focus:outline-none focus:border-[#1F5FBF]"
+                      />
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        value={formLng ?? ''}
+                        onChange={e => setFormLng(e.target.value.trim() === '' ? null : Number(e.target.value))}
+                        placeholder="Kinh độ (lng)"
+                        title="Kinh độ điểm tổ chức, -180..180"
+                        className="p-1.5 bg-white border border-slate-300 rounded-lg text-[11px] focus:outline-none focus:border-[#1F5FBF]"
+                      />
+                    </div>
+
+                    {formLat !== null && formLng !== null && isValidLatLng(formLat, formLng) && (
+                      <a
+                        href={`https://www.google.com/maps/search/?api=1&query=${formLat},${formLng}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1 text-[11px] font-bold text-[#1F5FBF] hover:underline"
+                      >
+                        <ExternalLink className="w-3 h-3" /> Xem trên Google Maps
+                      </a>
+                    )}
+
+                    {/* Bán kính + khung giờ: chỉ hiện khi đã có toạ độ */}
+                    {formLat !== null && formLng !== null && (
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-2 border-t border-slate-200">
+                        <div>
+                          <label className="text-[11px] font-bold text-slate-700 block mb-1">
+                            Bán kính (m)
+                          </label>
+                          <input
+                            type="number"
+                            min={RADIUS_MIN_M}
+                            max={RADIUS_MAX_M}
+                            value={formRadiusM ?? ''}
+                            onChange={e => setFormRadiusM(e.target.value.trim() === '' ? null : Number(e.target.value))}
+                            placeholder={`Mặc định ${yearlySettings.default_radius_m}`}
+                            title={`Để trống = dùng mặc định ${yearlySettings.default_radius_m} m. Cho phép ${RADIUS_MIN_M}–${RADIUS_MAX_M} m.`}
+                            className="w-full p-1.5 bg-white border border-slate-300 rounded-lg text-[11px] focus:outline-none focus:border-[#1F5FBF]"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[11px] font-bold text-slate-700 block mb-1">
+                            Mở điểm danh
+                          </label>
+                          <input
+                            type="datetime-local"
+                            value={formAttendanceOpen}
+                            onChange={e => setFormAttendanceOpen(e.target.value)}
+                            title="Để trống = không giới hạn riêng, chỉ dùng hạn chót"
+                            className="w-full p-1.5 bg-white border border-slate-300 rounded-lg text-[11px] focus:outline-none focus:border-[#1F5FBF]"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[11px] font-bold text-slate-700 block mb-1">
+                            Đóng điểm danh
+                          </label>
+                          <input
+                            type="datetime-local"
+                            value={formAttendanceClose}
+                            onChange={e => setFormAttendanceClose(e.target.value)}
+                            title="Để trống = không giới hạn riêng"
+                            className="w-full p-1.5 bg-white border border-slate-300 rounded-lg text-[11px] focus:outline-none focus:border-[#1F5FBF]"
+                          />
+                        </div>
+                      </div>
+                    )}
+
+                    {formLat !== null && formLng !== null && !isValidLatLng(formLat, formLng) && (
+                      <p className="text-[11px] text-rose-600 font-semibold">
+                        Toạ độ không hợp lệ: vĩ độ -90..90, kinh độ -180..180.
+                      </p>
+                    )}
+                    {formRadiusM !== null && !isValidRadius(formRadiusM) && (
+                      <p className="text-[11px] text-rose-600 font-semibold">
+                        Bán kính phải trong khoảng {RADIUS_MIN_M}–{RADIUS_MAX_M} m.
+                      </p>
+                    )}
                   </div>
                 </div>
               )}
@@ -1141,6 +1525,7 @@ export const TasksPage: React.FC = () => {
                     <div className="flex items-center gap-2">
                       <button
                         type="button"
+                        title="Chọn hoặc bỏ chọn tất cả chi đoàn"
                         onClick={handleSelectAllUnits}
                         className="px-2.5 py-1 text-xs font-semibold rounded bg-slate-100 hover:bg-slate-200 text-slate-700 cursor-pointer"
                       >
@@ -1152,28 +1537,28 @@ export const TasksPage: React.FC = () => {
                   {/* Chọn nhanh theo loại */}
                   <div className="flex flex-wrap items-center gap-1.5 text-xs">
                     <span className="text-slate-500 font-semibold">Chọn theo loại:</span>
-                    <button
+                    <button title="Dân cư (25)"
                       type="button"
                       onClick={() => handleSelectByType('residential')}
                       className="px-2 py-0.5 rounded bg-blue-50 text-[#1F5FBF] font-semibold border border-blue-200 hover:bg-blue-100 cursor-pointer"
                     >
                       Dân cư (25)
                     </button>
-                    <button
+                    <button title="Trường học (3)"
                       type="button"
                       onClick={() => handleSelectByType('school')}
                       className="px-2 py-0.5 rounded bg-blue-50 text-[#1F5FBF] font-semibold border border-blue-200 hover:bg-blue-100 cursor-pointer"
                     >
                       Trường học (3)
                     </button>
-                    <button
+                    <button title="Y tế (2)"
                       type="button"
                       onClick={() => handleSelectByType('health')}
                       className="px-2 py-0.5 rounded bg-blue-50 text-[#1F5FBF] font-semibold border border-blue-200 hover:bg-blue-100 cursor-pointer"
                     >
                       Y tế (2)
                     </button>
-                    <button
+                    <button title="Công an (1)"
                       type="button"
                       onClick={() => handleSelectByType('police')}
                       className="px-2 py-0.5 rounded bg-blue-50 text-[#1F5FBF] font-semibold border border-blue-200 hover:bg-blue-100 cursor-pointer"
@@ -1231,28 +1616,55 @@ export const TasksPage: React.FC = () => {
               {step === 3 && (
                 <div className="space-y-3">
                   <div className="flex items-center justify-between pb-2 border-b border-slate-100">
-                    <p className="text-slate-500">
-                      Tích chọn các tiêu chí con được cộng điểm khi hoàn thành nhiệm vụ này:
-                    </p>
-                    <button
+                    <div className="min-w-0">
+                      <p className="text-slate-500">
+                        Tích chọn tiêu chí con được cộng điểm khi hoàn thành nhiệm vụ này:
+                      </p>
+                      <p className="text-[11px] text-slate-400 mt-0.5">
+                        Chỉ gắn được tiêu chí Đoàn xã đã giao cho chi đoàn được chọn ở Bước 2.
+                        Mỗi chi đoàn chỉ có một nhiệm vụ cho mỗi tiêu chí.
+                      </p>
+                    </div>
+                    <button title="Bỏ qua, gán sau ›"
                       type="button"
                       onClick={() => setStep(4)}
-                      className="text-xs font-bold text-[#1F5FBF] hover:underline cursor-pointer"
+                      className="shrink-0 ml-3 text-xs font-bold text-[#1F5FBF] hover:underline cursor-pointer"
                     >
                       Bỏ qua, gán sau ›
                     </button>
                   </div>
 
+                  {selectedUnitIds.length === 0 && (
+                    <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-amber-800 flex items-start gap-2">
+                      <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                      <span>
+                        Chưa chọn chi đoàn nào ở Bước 2. Quay lại chọn chi đoàn để xem tiêu chí được giao.
+                      </span>
+                    </div>
+                  )}
+
+                  {selectedUnitIds.length > 0 && assignableSubIds.size === 0 && (
+                    <div className="p-3 bg-rose-50 border border-rose-200 rounded-lg text-rose-800 flex items-start gap-2">
+                      <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                      <span>
+                        Không có tiêu chí nào được Đoàn xã giao cho các chi đoàn đã chọn.
+                        Vào trang <b>Tiêu chí</b> để phân công trước, hoặc bỏ qua bước này.
+                      </span>
+                    </div>
+                  )}
+
                   <div className="max-h-64 overflow-y-auto space-y-3 border border-slate-200 rounded-xl p-3 bg-white">
-                    {criteriaSections.map(sec => (
-                      <div key={sec.id} className="space-y-2">
-                        <h4 className="font-bold text-slate-800 bg-slate-100 px-2.5 py-1 rounded">
-                          {sec.name}
-                        </h4>
-                        <div className="space-y-1.5 pl-2">
-                          {criteria
-                            .filter(c => c.section_id === sec.id)
-                            .map(crit => (
+                    {criteriaSections.map(sec => {
+                      const critsInSec = criteria.filter(c => c.section_id === sec.id);
+                      // Ẩn hẳn phần không còn tiêu chí nào thuộc bộ đang xét
+                      if (critsInSec.length === 0) return null;
+                      return (
+                        <div key={sec.id} className="space-y-2">
+                          <h4 className="font-bold text-slate-800 bg-slate-100 px-2.5 py-1 rounded">
+                            {sec.name}
+                          </h4>
+                          <div className="space-y-1.5 pl-2">
+                            {critsInSec.map(crit => (
                               <div key={crit.id} className="space-y-1">
                                 <span className="font-semibold text-slate-700 block text-[11px]">
                                   Tiêu chí {crit.stt}: {crit.name}
@@ -1264,41 +1676,76 @@ export const TasksPage: React.FC = () => {
                                       const isChecked = subCriteriaContributions.some(
                                         c => c.sub_criterion_id === sub.id
                                       );
-                                      const contrib = subCriteriaContributions.find(
-                                        c => c.sub_criterion_id === sub.id
+                                      const notAssigned = !assignableSubIds.has(sub.id);
+
+                                      // Chi đoàn nào đã có nhiệm vụ gắn tiêu chí này?
+                                      const usedUnitIds = subIdToUsedUnitIds.get(sub.id);
+                                      const blockedUnits = selectedUnitIds.filter(uid =>
+                                        usedUnitIds?.has(uid)
                                       );
+                                      // Bị chặn khi MỌI chi đoàn đang chọn đều đã dùng tiêu chí này
+                                      // (và tiêu chí chưa được tick sẵn trong form này)
+                                      const blockedByDuplicate =
+                                        !isChecked &&
+                                        blockedUnits.length > 0 &&
+                                        blockedUnits.length === selectedUnitIds.length;
+
+                                      const disabled = notAssigned || blockedByDuplicate;
+                                      const blockedNames = blockedUnits
+                                        .map(uid => units.find(u => u.id === uid)?.name)
+                                        .filter(Boolean)
+                                        .join(', ');
 
                                       return (
                                         <div
                                           key={sub.id}
-                                          className="p-2 rounded-lg border border-slate-100 bg-slate-50/50 flex items-center justify-between gap-2"
+                                          className={`p-2 rounded-lg border flex items-center justify-between gap-2 ${
+                                            disabled
+                                              ? 'border-slate-100 bg-slate-100/60 opacity-60'
+                                              : 'border-slate-100 bg-slate-50/50'
+                                          }`}
                                         >
-                                          <label className="flex items-start gap-2 flex-1 cursor-pointer">
+                                          <label
+                                            className={`flex items-start gap-2 flex-1 ${
+                                              disabled ? 'cursor-not-allowed' : 'cursor-pointer'
+                                            }`}
+                                            title={
+                                              notAssigned
+                                                ? 'Tiêu chí này chưa được Đoàn xã giao cho chi đoàn đã chọn'
+                                                : blockedByDuplicate
+                                                  ? `Đã có nhiệm vụ dùng tiêu chí này cho: ${blockedNames}`
+                                                  : 'Tích để gắn tiêu chí vào nhiệm vụ'
+                                            }
+                                          >
                                             <input
                                               type="checkbox"
                                               checked={isChecked}
+                                              disabled={disabled}
                                               onChange={() => handleToggleSubCriterion(sub.id)}
-                                              className="mt-0.5 rounded text-[#1F5FBF]"
+                                              className="mt-0.5 rounded text-[#1F5FBF] disabled:cursor-not-allowed"
                                             />
-                                            <span className="text-slate-800 leading-snug">
-                                              {sub.condition_text}
+                                            <span className="leading-snug">
+                                              <span className={disabled ? 'text-slate-500' : 'text-slate-800'}>
+                                                {sub.condition_text}
+                                              </span>
+                                              {notAssigned && (
+                                                <span className="block mt-1 text-[10px] font-bold text-slate-500">
+                                                  Chưa giao cho chi đoàn đã chọn
+                                                </span>
+                                              )}
+                                              {!notAssigned && blockedByDuplicate && (
+                                                <span className="block mt-1 text-[10px] font-bold text-rose-600">
+                                                  Đã có nhiệm vụ cho: {blockedNames}
+                                                </span>
+                                              )}
                                             </span>
                                           </label>
 
                                           {isChecked && (
                                             <div className="flex items-center gap-1 shrink-0">
-                                              <span className="text-slate-400 text-[10px]">Cộng:</span>
-                                              <input
-                                                type="number"
-                                                min={1}
-                                                max={sub.max_score}
-                                                value={contrib?.contribution_score || 1}
-                                                onChange={e =>
-                                                  handleUpdateContributionScore(sub.id, Number(e.target.value))
-                                                }
-                                                className="w-14 p-1 bg-white border border-blue-300 rounded text-center font-bold text-[#1F5FBF]"
-                                              />
-                                              <span className="text-slate-400 text-[10px]">/ {sub.max_score}đ</span>
+                                              <span className="text-emerald-700 text-[10px] font-bold bg-emerald-50 px-1.5 py-0.5 rounded">
+                                                {sub.max_score} điểm
+                                              </span>
                                             </div>
                                           )}
                                         </div>
@@ -1307,9 +1754,10 @@ export const TasksPage: React.FC = () => {
                                 </div>
                               </div>
                             ))}
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               )}
@@ -1326,7 +1774,7 @@ export const TasksPage: React.FC = () => {
                         <span className="text-slate-400">Hạn chót:</span> {formDueDate}
                       </div>
                       <div>
-                        <span className="text-slate-400">Điểm tối đa:</span> {formMaxScore} điểm
+                        <span className="text-slate-400">Trạng thái:</span> Phát động ngay
                       </div>
                       <div>
                         <span className="text-slate-400">Số chi đoàn giao:</span> {selectedUnitIds.length} chi đoàn
@@ -1355,7 +1803,7 @@ export const TasksPage: React.FC = () => {
             <div className="p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-between">
               <div>
                 {step > 1 && (
-                  <button
+                  <button title="Quay lại"
                     type="button"
                     onClick={() => setStep((step - 1) as any)}
                     className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-100 cursor-pointer"
@@ -1367,7 +1815,7 @@ export const TasksPage: React.FC = () => {
 
               <div className="flex items-center gap-2">
                 {step < 4 ? (
-                  <button
+                  <button title="Tiếp theo"
                     type="button"
                     onClick={() => {
                       if (step === 1 && !formTitle.trim()) {
@@ -1384,13 +1832,14 @@ export const TasksPage: React.FC = () => {
                   <>
                     <button
                       type="button"
+                      title="Lưu nhiệm vụ ở trạng thái nháp, chưa gửi cho chi đoàn"
                       onClick={() => handleSaveTask('draft')}
                       disabled={savingTask}
                       className="px-4 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-300 hover:bg-slate-100 rounded-lg cursor-pointer disabled:opacity-50"
                     >
                       {savingTask ? 'Đang lưu…' : 'Lưu nháp'}
                     </button>
-                    <button
+                    <button title="Gửi đi"
                       type="button"
                       onClick={() => handleSaveTask('published')}
                       disabled={savingTask || selectedUnitIds.length === 0}
@@ -1441,7 +1890,7 @@ export const TasksPage: React.FC = () => {
               className="w-full p-2 text-xs bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:border-amber-500"
             />
             <div className="flex justify-end gap-2 pt-2">
-              <button
+              <button title="Hủy"
                 type="button"
                 onClick={() => { setCloseConfirmTaskId(null); setCloseConfirmText(''); }}
                 className="px-3 py-1.5 text-xs font-semibold text-slate-600 bg-slate-100 rounded-lg"
@@ -1451,6 +1900,7 @@ export const TasksPage: React.FC = () => {
               <button
                 type="button"
                 disabled={closeConfirmText.trim().toLowerCase() !== 'dong' || closingTask}
+                title="Đóng nhiệm vụ: chi đoàn chưa nộp sẽ bị tính là chưa hoàn thành"
                 onClick={handleConfirmClose}
                 className={`px-3 py-1.5 text-xs font-bold text-white rounded-lg ${
                   closeConfirmText.trim().toLowerCase() !== 'dong' || closingTask
@@ -1471,6 +1921,249 @@ export const TasksPage: React.FC = () => {
 
       {criteriaTaskId && (
         <TaskCriteriaModal taskId={criteriaTaskId} onClose={() => setCriteriaTaskId(null)} />
+      )}
+
+      {/* MODAL NỘP BÁO CÁO CỦA BÍ THƯ CHI ĐOÀN */}
+      {reportTask && (
+        <UnitReportModal
+          taskId={reportTask.id}
+          taskTitle={reportTask.title}
+          onClose={() => setReportTask(null)}
+        />
+      )}
+
+      {/* MODAL: CHỈNH SỬA NHIỆM VỤ */}
+      {editingTask && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4">
+          <div className="bg-white rounded-2xl max-w-xl w-full max-h-[90vh] overflow-y-auto p-5 space-y-4 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div>
+                <h3 className="text-sm font-bold text-slate-900">Chỉnh sửa nhiệm vụ</h3>
+                <p className="text-[11px] text-slate-500">Cập nhật thông tin và điều chỉnh các chi đoàn được giao</p>
+              </div>
+              <button title="Đóng"
+                type="button"
+                onClick={() => setEditingTask(null)}
+                className="text-slate-400 hover:text-slate-700"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveEdit} className="space-y-3 text-xs">
+              <div>
+                <label className="font-bold text-slate-800 block mb-1">
+                  Tên nhiệm vụ: <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={editTitle}
+                  onChange={e => setEditTitle(e.target.value)}
+                  className="w-full p-2 bg-slate-50 border border-slate-300 rounded-lg text-xs focus:outline-none focus:border-[#1F5FBF]"
+                />
+              </div>
+
+              <div>
+                <label className="font-bold text-slate-800 block mb-1">Nội dung chi tiết:</label>
+                <textarea
+                  rows={3}
+                  value={editContent}
+                  onChange={e => setEditContent(e.target.value)}
+                  className="w-full p-2 bg-slate-50 border border-slate-300 rounded-lg text-xs focus:outline-none focus:border-[#1F5FBF] resize-none"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="font-bold text-slate-800 block mb-1">
+                    Hạn chót hoàn thành: <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="date"
+                    required
+                    value={editDueDate}
+                    onChange={e => setEditDueDate(e.target.value)}
+                    className="w-full p-2 bg-slate-50 border border-slate-300 rounded-lg text-xs focus:outline-none focus:border-[#1F5FBF]"
+                  />
+                </div>
+
+                <div>
+                  <label className="font-bold text-slate-800 block mb-1">Phạm vi nộp cá nhân:</label>
+                  <select
+                    value={editSubmitScope}
+                    onChange={e => setEditSubmitScope(e.target.value as 'assigned' | 'open')}
+                    className="w-full p-2 bg-slate-50 border border-slate-300 rounded-lg text-xs focus:outline-none focus:border-[#1F5FBF]"
+                  >
+                    <option value="assigned">Chỉ đoàn viên thuộc chi đoàn được giao</option>
+                    <option value="open">Mở toàn xã (ai cũng nộp được)</option>
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="font-bold text-slate-800 block mb-1">Chỉ tiêu đề ra:</label>
+                <input
+                  type="text"
+                  value={editTarget}
+                  onChange={e => setEditTarget(e.target.value)}
+                  className="w-full p-2 bg-slate-50 border border-slate-300 rounded-lg text-xs focus:outline-none focus:border-[#1F5FBF]"
+                />
+              </div>
+
+              {/* Định vị điểm danh khi sửa */}
+              <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <label className="font-bold text-slate-800 flex items-center gap-1.5">
+                    <MapPin className="w-4 h-4 text-rose-500" /> Định vị điểm danh:
+                  </label>
+                  {(editLat !== null || editLng !== null) && (
+                    <button
+                      type="button"
+                      onClick={() => { setEditLat(null); setEditLng(null); }}
+                      title="Bỏ toạ độ — nhiệm vụ sẽ không kiểm tra khoảng cách"
+                      className="text-[11px] font-bold text-rose-600 hover:underline"
+                    >
+                      Bỏ định vị
+                    </button>
+                  )}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      const pos = await getGpsPosition();
+                      setEditLat(Number(pos.lat.toFixed(6)));
+                      setEditLng(Number(pos.lng.toFixed(6)));
+                      showToast({ title: 'Đã lấy vị trí hiện tại', type: 'success' });
+                    } catch (e) {
+                      showToast({ title: 'Không lấy được vị trí', description: e instanceof Error ? e.message : '', type: 'error' });
+                    }
+                  }}
+                  title="Lấy toạ độ từ thiết bị"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-bold text-white bg-[#1F5FBF] hover:bg-[#154690] rounded-lg"
+                >
+                  <MapPin className="w-3.5 h-3.5" /> Lấy vị trí hiện tại
+                </button>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <input
+                    type="text" inputMode="decimal"
+                    value={editLat ?? ''}
+                    onChange={e => setEditLat(e.target.value.trim() === '' ? null : Number(e.target.value))}
+                    placeholder="Vĩ độ (lat)"
+                    title="Vĩ độ, -90..90"
+                    className="p-1.5 bg-white border border-slate-300 rounded-lg text-[11px]"
+                  />
+                  <input
+                    type="text" inputMode="decimal"
+                    value={editLng ?? ''}
+                    onChange={e => setEditLng(e.target.value.trim() === '' ? null : Number(e.target.value))}
+                    placeholder="Kinh độ (lng)"
+                    title="Kinh độ, -180..180"
+                    className="p-1.5 bg-white border border-slate-300 rounded-lg text-[11px]"
+                  />
+                </div>
+
+                {editLat !== null && editLng !== null && (
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1">
+                    <input
+                      type="number" min={RADIUS_MIN_M} max={RADIUS_MAX_M}
+                      value={editRadiusM ?? ''}
+                      onChange={e => setEditRadiusM(e.target.value.trim() === '' ? null : Number(e.target.value))}
+                      placeholder={`Bán kính (mặc định ${yearlySettings.default_radius_m})`}
+                      title="Bán kính điểm danh. Để trống = dùng mặc định."
+                      className="p-1.5 bg-white border border-slate-300 rounded-lg text-[11px]"
+                    />
+                    <input
+                      type="datetime-local"
+                      value={editAttendanceOpen}
+                      onChange={e => setEditAttendanceOpen(e.target.value)}
+                      title="Giờ mở điểm danh"
+                      className="p-1.5 bg-white border border-slate-300 rounded-lg text-[11px]"
+                    />
+                    <input
+                      type="datetime-local"
+                      value={editAttendanceClose}
+                      onChange={e => setEditAttendanceClose(e.target.value)}
+                      title="Giờ đóng điểm danh"
+                      className="p-1.5 bg-white border border-slate-300 rounded-lg text-[11px]"
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* Chi đoàn được giao */}
+              <div className="pt-2 border-t border-slate-100">
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="font-bold text-slate-800">
+                    Chi đoàn được giao ({editSelectedUnitIds.length}/{units.length}):
+                  </label>
+                  <div className="flex gap-2 text-[11px]">
+                    <button title="Chọn tất cả"
+                      type="button"
+                      onClick={() => setEditSelectedUnitIds(units.map(u => u.id))}
+                      className="text-[#1F5FBF] hover:underline"
+                    >
+                      Chọn tất cả
+                    </button>
+                    <button title="Bỏ chọn"
+                      type="button"
+                      onClick={() => setEditSelectedUnitIds([])}
+                      className="text-slate-500 hover:underline"
+                    >
+                      Bỏ chọn
+                    </button>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5 max-h-36 overflow-y-auto p-2 border border-slate-200 rounded-lg bg-slate-50/50">
+                  {units.map(u => {
+                    const isChecked = editSelectedUnitIds.includes(u.id);
+                    return (
+                      <label
+                        key={u.id}
+                        className={`flex items-center gap-1.5 p-1.5 rounded cursor-pointer select-none text-[11px] ${
+                          isChecked ? 'bg-blue-100/70 font-semibold text-[#1F5FBF]' : 'text-slate-700 hover:bg-slate-100'
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isChecked}
+                          onChange={e => {
+                            if (e.target.checked) setEditSelectedUnitIds(prev => [...prev, u.id]);
+                            else setEditSelectedUnitIds(prev => prev.filter(x => x !== u.id));
+                          }}
+                          className="w-3.5 h-3.5 text-[#1F5FBF] rounded"
+                        />
+                        <span className="truncate">{u.name}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
+                <button title="Hủy"
+                  type="button"
+                  onClick={() => setEditingTask(null)}
+                  className="px-4 py-2 text-xs font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg"
+                >
+                  Hủy
+                </button>
+                <button title="Lưu thay đổi"
+                  type="submit"
+                  disabled={isUpdatingTask || !editTitle.trim() || !editDueDate}
+                  className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-[#1F5FBF] hover:bg-[#154690] rounded-lg disabled:opacity-60"
+                >
+                  {isUpdatingTask && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                  Lưu thay đổi
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
       )}
     </div>
   );

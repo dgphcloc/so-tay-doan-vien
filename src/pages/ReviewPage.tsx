@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useApp } from '../context/AppContext';
+import { useConfirm } from '../components/common/ConfirmDialog';
 import { canReview, isAdminLevel } from '../utils/permissions';
 import {
   FileCheck2,
@@ -60,6 +61,7 @@ export const ReviewPage: React.FC = () => {
     getTaskById,
     getSubCriterionById,
     showToast,
+    bulkApproveTaskResults,
   } = useApp();
 
   // Số bài đoàn viên chờ duyệt (bí thư chi đoàn chỉ đếm chi đoàn mình)
@@ -72,6 +74,8 @@ export const ReviewPage: React.FC = () => {
   );
 
   // Active Tab
+  const { confirm } = useConfirm();
+
   const [activeTab, setActiveTab] = useState<'tasks' | 'criteria' | 'members'>('tasks');
 
   // Loading simulation state
@@ -92,6 +96,9 @@ export const ReviewPage: React.FC = () => {
   const [selectedUnitFilter, setSelectedUnitFilter] = useState<string>('all');
   const [selectedTypeFilter, setSelectedTypeFilter] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<ReviewStatus | 'all'>('pending');
+  // Cấp duyệt: 'all' | 'level1' (bí thư CĐ chưa duyệt) | 'level2' (chờ bí thư xã chốt)
+  const [reviewLevel, setReviewLevel] = useState<'all' | 'level1' | 'level2'>('all');
+  const [isBulkApproving, setIsBulkApproving] = useState(false);
   const [taskOrCritFilter, setTaskOrCritFilter] = useState<string>('all');
 
   // Sorting & Pagination
@@ -137,6 +144,8 @@ export const ReviewPage: React.FC = () => {
       const submitter = getMemberById(item.submitted_by);
 
       if (statusFilter !== 'all' && item.status !== statusFilter) return false;
+      if (reviewLevel === 'level1' && item.admin_reviewed_at) return false;
+      if (reviewLevel === 'level2' && !item.admin_reviewed_at) return false;
       if (selectedUnitFilter !== 'all' && item.unit_id !== selectedUnitFilter) return false;
       if (selectedTypeFilter !== 'all' && unit?.unit_type_id !== selectedTypeFilter) return false;
       if (taskOrCritFilter !== 'all' && item.task_id !== taskOrCritFilter) return false;
@@ -161,7 +170,7 @@ export const ReviewPage: React.FC = () => {
         return sortOrder === 'desc' ? unitB.localeCompare(unitA) : unitA.localeCompare(unitB);
       }
     });
-  }, [taskResults, statusFilter, selectedUnitFilter, selectedTypeFilter, taskOrCritFilter, searchQuery, sortField, sortOrder, getUnitById, getTaskById, getMemberById]);
+  }, [taskResults, statusFilter, reviewLevel, selectedUnitFilter, selectedTypeFilter, taskOrCritFilter, searchQuery, sortField, sortOrder, getUnitById, getTaskById, getMemberById]);
 
   // Filtered Criterion Submissions
   const filteredCriterionSubmissions = useMemo(() => {
@@ -425,7 +434,7 @@ export const ReviewPage: React.FC = () => {
 
       {/* Tabs Chuyển đổi: Kết quả nhiệm vụ vs Điểm tự chấm */}
       <div className="flex items-center gap-2 border-b border-slate-200">
-        <button
+        <button title="Xem danh sách"
           type="button"
           onClick={() => {
             setActiveTab('tasks');
@@ -451,7 +460,7 @@ export const ReviewPage: React.FC = () => {
         </button>
 
 
-        <button
+        <button title="Bài nộp cá nhân của đoàn viên cần duyệt"
           type="button"
           onClick={() => {
             setActiveTab('members');
@@ -477,6 +486,64 @@ export const ReviewPage: React.FC = () => {
         </button>
       </div>
 
+      {/* Thanh công cụ duyệt nhiệm vụ: cấp duyệt + duyệt tất cả */}
+      {activeTab === 'tasks' && (
+        <div className="bg-white p-3 rounded-xl border border-slate-200 shadow-xs flex flex-wrap items-center gap-3">
+              {/* Lọc cấp duyệt (chỉ tab nhiệm vụ) */}
+              {(
+                <div className="flex items-center gap-1.5">
+                  <span className="text-slate-500">Cấp duyệt:</span>
+                  <select
+                    value={reviewLevel}
+                    onChange={e => setReviewLevel(e.target.value as 'all' | 'level1' | 'level2')}
+                    title="Chọn cấp duyệt cần xem: cấp 1 (bí thư chi đoàn chưa duyệt) hoặc cấp 2 (chờ bí thư xã chốt)"
+                    className="bg-slate-50 border border-slate-200 rounded-lg px-2 py-1 font-medium text-slate-700 focus:outline-none"
+                  >
+                    <option value="all">Tất cả cấp</option>
+                    <option value="level1">Cấp 1 — Chờ bí thư chi đoàn</option>
+                    <option value="level2">Cấp 2 — Chờ bí thư xã chốt</option>
+                  </select>
+                </div>
+              )}
+    
+              {/* Duyệt tất cả */}
+              {isAdminLevel(currentRole) && filteredTaskResults.filter(r => r.status === 'pending').length > 0 && (
+                <button
+                  type="button"
+                  title="Duyệt tất cả bài nộp nhiệm vụ đang chờ trong danh sách đã lọc"
+                  disabled={isBulkApproving}
+                  onClick={async () => {
+                    const pending = filteredTaskResults.filter(r => r.status === 'pending');
+                    if (pending.length === 0) return;
+                    const ok = await confirm({
+                      title: `Duyệt tất cả ${pending.length} bài nộp?`,
+                      message: 'Toàn bộ bài nộp nhiệm vụ đang chờ trong danh sách đã lọc sẽ được đánh dấu ĐẠT.',
+                      details: 'Nếu cần xem minh chứng từng bài trước khi duyệt, hãy bấm vào từng dòng thay vì dùng nút này.',
+                      variant: 'warning',
+                      confirmText: `Duyệt ${pending.length} bài`,
+                    });
+                    if (!ok) return;
+                    setIsBulkApproving(true);
+                    try {
+                      const res = await bulkApproveTaskResults(pending.map(r => r.id));
+                      if (res.success) {
+                        showToast({ title: `Đã duyệt ${res.approved} bài nộp`, type: 'success' });
+                      } else {
+                        showToast({ title: 'Không duyệt được', description: res.message, type: 'error' });
+                      }
+                    } finally {
+                      setIsBulkApproving(false);
+                    }
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg disabled:opacity-60 shrink-0"
+                >
+                  {isBulkApproving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle2 className="w-3.5 h-3.5" />}
+                  Duyệt tất cả ({filteredTaskResults.filter(r => r.status === 'pending').length})
+                </button>
+              )}
+        </div>
+      )}
+
       {activeTab === 'members' && <MemberSubmissionsPanel />}
 
       {/* Thanh Tìm kiếm & Bộ lọc */}
@@ -501,7 +568,7 @@ export const ReviewPage: React.FC = () => {
             {(['pending', 'approved', 'rejected', 'all'] as const).map(st => (
               <button
                 key={st}
-                type="button"
+                type="button" title="Lọc theo trạng thái"
                 onClick={() => setStatusFilter(st)}
                 className={`px-2.5 py-1 text-xs font-semibold rounded-lg transition-colors cursor-pointer shrink-0 ${
                   statusFilter === st
@@ -561,6 +628,7 @@ export const ReviewPage: React.FC = () => {
             <span className="text-slate-500">Sắp xếp:</span>
             <button
               type="button"
+              title="Đổi cách sắp xếp danh sách"
               onClick={() => {
                 setSortField(sortField === 'date' ? 'unit' : 'date');
               }}
@@ -721,7 +789,7 @@ export const ReviewPage: React.FC = () => {
                 >
                   Tiếp › <ChevronRight className="w-4 h-4" />
                 </button>
-                <button
+                <button title="Đóng"
                   type="button"
                   onClick={() => {
                     setSelectedTaskId(null);
@@ -1011,7 +1079,7 @@ export const ReviewPage: React.FC = () => {
               ) : (
               <>
               <div className="flex items-center gap-2">
-                <button
+                <button title="Từ chối"
                   type="button"
                   onClick={() => setIsRejectModalOpen(true)}
                   className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-lg cursor-pointer transition-colors shadow-2xs"
@@ -1035,7 +1103,7 @@ export const ReviewPage: React.FC = () => {
                     );
                   }
                   return (
-                    <button
+                    <button title="Hoàn thành"
                       type="button"
                       onClick={handleApproveCurrent}
                       disabled={!!scoreError || busyReview}
@@ -1069,7 +1137,7 @@ export const ReviewPage: React.FC = () => {
                 </h4>
                 <p className="text-[11px] text-slate-500">Mã minh chứng: {activeLightboxEvidence.id}</p>
               </div>
-              <button
+              <button title="Đóng"
                 type="button"
                 onClick={() => setActiveLightboxEvidence(null)}
                 className="p-1 rounded-full text-slate-400 hover:text-slate-600 hover:bg-slate-200"
@@ -1152,7 +1220,7 @@ export const ReviewPage: React.FC = () => {
                         <p className="text-[11px] text-slate-500">Khu vực xã Hòa Bình, tỉnh Cà Mau</p>
                       </div>
                     </div>
-                    <button
+                    <button title="Sao chép toạ độ"
                       type="button"
                       onClick={() => {
                         navigator.clipboard?.writeText(
@@ -1177,7 +1245,7 @@ export const ReviewPage: React.FC = () => {
             </div>
 
             <div className="p-3 bg-slate-50 border-t border-slate-200 text-right">
-              <button
+              <button title="Đóng"
                 type="button"
                 onClick={() => setActiveLightboxEvidence(null)}
                 className="px-4 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-100 rounded-lg cursor-pointer"
@@ -1198,7 +1266,7 @@ export const ReviewPage: React.FC = () => {
                 <XCircle className="w-5 h-5" />
                 <h3 className="text-base font-bold text-slate-900">Từ chối duyệt kết quả</h3>
               </div>
-              <button
+              <button title="Đóng"
                 type="button"
                 onClick={() => setIsRejectModalOpen(false)}
                 className="text-slate-400 hover:text-slate-600"
@@ -1224,14 +1292,14 @@ export const ReviewPage: React.FC = () => {
             </div>
 
             <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
-              <button
+              <button title="Huỷ bỏ"
                 type="button"
                 onClick={() => setIsRejectModalOpen(false)}
                 className="px-4 py-2 text-xs font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg cursor-pointer"
               >
                 Huỷ bỏ
               </button>
-              <button
+              <button title="Xác nhận từ chối"
                 type="button"
                 onClick={handleConfirmReject}
                 disabled={!rejectReason.trim()}

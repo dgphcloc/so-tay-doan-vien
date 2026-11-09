@@ -221,7 +221,7 @@ bchInitData.forEach((b, idx) => {
     religion: 'Không',
     is_party_member: b.is_party,
     ethnicity_id: 'kinh',
-    avatar_url: `https://i.pravatar.cc/80?u=${b.id}`,
+    avatar_url: '',
     current_job: b.job,
     central_member_code: `DNVN-2026-000${idx + 1}`,
     note: b.role,
@@ -280,7 +280,7 @@ mockUnits.forEach((unit) => {
       religion: memberCounter % 11 === 0 ? 'Phật giáo' : 'Không',
       is_party_member: isParty,
       ethnicity_id: mockEthnicities[ethIdx].id,
-      avatar_url: `https://i.pravatar.cc/80?u=${memId}`,
+      avatar_url: '',
       current_job: sampleJobs[memberCounter % sampleJobs.length],
       central_member_code: `DNVN-2026-${(memberCounter * 17).toString().padStart(5, '0')}`,
       note: pos === 'secretary' ? `Bí thư ${unit.name}` : undefined,
@@ -313,6 +313,8 @@ export const mockYearlySettings: YearlySettings = {
   max_files: 3,
   max_links: 5,
   require_gps: true,
+  default_radius_m: 100,
+  max_accuracy_m: 100,
 };
 
 // 8. Profiles (Tài khoản phân quyền cho các thành viên chính)

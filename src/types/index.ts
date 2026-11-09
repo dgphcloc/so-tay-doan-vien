@@ -36,6 +36,7 @@ export interface Unit {
 export type Gender = 'male' | 'female' | 'other';
 export type CurrentPosition = 'secretary' | 'deputy_secretary' | 'member';
 export type PoliticalTheoryLevel = 'advanced' | 'intermediate' | 'elementary' | 'other';
+export type PartyTargetStatus = 'none' | 'elite' | 'trained_class' | 'introduced' | 'admitted';
 
 export interface Member {
   id: string;
@@ -53,11 +54,20 @@ export interface Member {
   is_active: boolean;
   religion: string;
   is_party_member: boolean;
+  is_elite_member?: boolean;
+  elite_date?: string;
+  party_target_status?: PartyTargetStatus;
   ethnicity_id: string;
   avatar_url: string;
   current_job: string;
   central_member_code: string;
   note?: string;
+  approval_status?: 'pending' | 'approved' | 'rejected';
+  is_newly_admitted?: boolean;
+  rejection_reason?: string;
+  has_salary?: boolean;
+  exempt_months?: number[];
+  transferred_out_month?: number | null;
 }
 
 export interface Profile {
@@ -148,6 +158,13 @@ export interface Task {
   closed_by: string | null;
   closed_at: string | null;
   submit_scope: 'assigned' | 'open';
+  source_sub_criterion_id?: string | null;
+  /** Bán kính điểm danh riêng của nhiệm vụ (mét). null = dùng cấu hình năm. */
+  radius_m?: number | null;
+  /** Giờ mở điểm danh. null = không giới hạn riêng. */
+  attendance_open_at?: string | null;
+  /** Giờ đóng điểm danh. null = không giới hạn riêng. */
+  attendance_close_at?: string | null;
 }
 
 export interface TaskUnit {
@@ -183,6 +200,8 @@ export interface TaskResult {
   reviewed_by: string | null;
   reviewed_at: string | null;
   review_note?: string;
+  admin_reviewed_by?: string | null;
+  admin_reviewed_at?: string | null;
 }
 
 export interface MemberSubmission {
@@ -295,6 +314,10 @@ export interface YearlySettings {
   max_files: number;
   max_links: number;
   require_gps: boolean;
+  /** Bán kính điểm danh mặc định toàn hệ thống (mét). 20..1000. */
+  default_radius_m: number;
+  /** Sai số GPS tối đa chấp nhận (mét). Vượt ngưỡng -> nhãn "Độ chính xác kém". 5..500. */
+  max_accuracy_m: number;
 }
 
 export interface AuditLog {

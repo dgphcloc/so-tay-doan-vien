@@ -20,11 +20,17 @@ import { RemindersPage } from './pages/RemindersPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { AccountsPage } from './pages/AccountsPage';
 import { AuditLogsPage } from './pages/AuditLogsPage';
+import { EvaluationPage } from './pages/EvaluationPage';
+import { UnionFeePage } from './pages/UnionFeePage';
+import { SetupWizardPage } from './pages/SetupWizardPage';
+import { ConfirmProvider } from './components/common/ConfirmDialog';
+import { UnitReportPage } from './pages/UnitReportPage';
 
 export default function App() {
   return (
     <AuthGate>
       <AppProvider>
+        <ConfirmProvider>
         <HashRouter>
           <Routes>
             <Route path="/" element={<AppLayout />}>
@@ -46,10 +52,15 @@ export default function App() {
               <Route path="cau-hinh" element={<SettingsPage />} />
               <Route path="tai-khoan" element={<AccountsPage />} />
               <Route path="nhat-ky" element={<AuditLogsPage />} />
+              <Route path="danh-gia" element={<EvaluationPage />} />
+              <Route path="doan-phi" element={<UnionFeePage />} />
+              <Route path="thiet-lap" element={<SetupWizardPage />} />
+              <Route path="bao-cao-chi-doan" element={<UnitReportPage />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Route>
           </Routes>
         </HashRouter>
+        </ConfirmProvider>
       </AppProvider>
     </AuthGate>
   );

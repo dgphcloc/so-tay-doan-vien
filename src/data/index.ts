@@ -19,8 +19,13 @@ import {
   toCriteriaSet, toCriteriaSection, toCriterion, toSubCriterion, toCriterionSubmission,
   toTask, toTaskUnit, toTaskRegistration, toTaskSubCriterion, toTaskResult, toEvidence,
   toMemberSubmission,
+  toCommittee,
   toNotification, toWarning,
+  toUnitReport,
 } from './supabaseRepository';
+import { reportSnapshotError } from './snapshotError';
+
+export { getSnapshotError, subscribeSnapshotError } from './snapshotError';
 
 export type DataSource = 'mock' | 'supabase';
 
@@ -48,9 +53,9 @@ async function hybridSnapshot(): Promise<Awaited<ReturnType<Repository['getRawSn
     // Mọi nhóm truy vấn chạy SONG SONG. Trước đây 3 nhóm chạy nối tiếp nhau
     // nên mỗi lần refresh phải chờ hết nhóm này mới tới nhóm khác.
     const [
-      [units, unitTypes, ethnicities, members, profiles, unitCommittees, reports, yearlySettings, auditLogs],
+      [units, unitTypes, ethnicities, members, profiles, unitCommitteesRaw, reports, yearlySettings, auditLogs],
       [criteriaSetsRaw, criteriaSectionsRaw, criteriaRaw, subCriteriaRaw, criterionSubmissionsRaw],
-      [tasksRaw, taskUnitsRaw, taskRegRaw, taskSubRaw, taskResultsRaw, memberSubsRaw, evidencesRaw, notificationsRaw, warningsRaw],
+      [tasksRaw, taskUnitsRaw, taskRegRaw, taskSubRaw, taskResultsRaw, memberSubsRaw, unitReportsRaw, evidencesRaw, notificationsRaw, warningsRaw],
     ] = await Promise.all([
       Promise.all([
         gd1Repo().listUnits({ isActive: undefined }).then((rs) => rs.map((r) => r.unit)),
@@ -58,13 +63,16 @@ async function hybridSnapshot(): Promise<Awaited<ReturnType<Repository['getRawSn
         gd1Repo().listEthnicities(),
         gd1Repo().listMembers().then((rs) => rs.map((r) => r.member)),
         gd1Repo().listProfiles().then((rs) => rs.map((r) => r.profile)),
-        sb.from('unit_committees').select('*').then(({ data }) => (data ?? []) as never),
+        fetchAll((f, t) => sb.from('unit_committees').select('*').range(f, t)),
         gd1Repo().listReports(),
         gd1Repo().getYearlySettings(new Date().getFullYear()),
         gd1Repo().listAuditLogs().then((rs) => rs.map((r) => r.log)),
       ]),
       // Giai đoạn 2 — tiêu chí: đọc thật, KHÔNG fallback mock
       Promise.all([
+        // Nạp TẤT CẢ bộ tiêu chí (kể cả đã lưu trữ) để cây KPI còn tra được
+        // tên bộ/phần của năm cũ. Việc chọn "bộ đang dùng" ưu tiên bộ chưa
+        // lưu trữ — xem setRolesData trong AppContext.
         fetchAll((f, t) => sb.from('criteria_sets').select('*').order('year', { ascending: false }).range(f, t)),
         fetchAll((f, t) => sb.from('criteria_sections').select('*').order('stt').range(f, t)),
         fetchAll((f, t) => sb.from('criteria').select('*').order('stt').range(f, t)),
@@ -80,20 +88,21 @@ async function hybridSnapshot(): Promise<Awaited<ReturnType<Repository['getRawSn
         safe(fetchAll((f, t) => sb.from('task_sub_criteria').select('*').range(f, t))),
         safe(fetchAll((f, t) => sb.from('task_results').select('*').range(f, t))),
         safe(fetchAll((f, t) => sb.from('member_submissions').select('*').range(f, t))),
+        safe(fetchAll((f, t) => sb.from('unit_reports').select('*').range(f, t))),
         safe(fetchAll((f, t) => sb.from('evidences').select('*').range(f, t))),
-        safe(fetchAll((f, t) => sb.from('notifications').select('*').order('created_at', { ascending: false }).range(f, t))),
+        safe(gd1Repo().listMyNotifications()),
         safe(fetchAll((f, t) => sb.from('warnings').select('*').range(f, t))),
       ]),
     ]);
 
-    return {
+    const result = {
       ...mockSnap,          // các mảng chưa làm thật vẫn tạm từ mock
       units,
       unitTypes,
       ethnicities,
       members,
       profiles,
-      unitCommittees: unitCommittees as never,
+      unitCommittees: unitCommitteesRaw.map(toCommittee),
       reports,
       yearlySettings,
       auditLogs,
@@ -108,16 +117,23 @@ async function hybridSnapshot(): Promise<Awaited<ReturnType<Repository['getRawSn
       taskSubCriteria: taskSubRaw.map(toTaskSubCriterion),
       taskResults: taskResultsRaw.map(toTaskResult),
       memberSubmissions: memberSubsRaw.map(toMemberSubmission),
+      unitReports: unitReportsRaw.map(toUnitReport),
       evidences: evidencesRaw.map(toEvidence),
       notifications: notificationsRaw.map(toNotification),
       warnings: warningsRaw.map(toWarning),
     };
+    // Đọc được bình thường -> tắt banner lỗi (nếu trước đó có)
+    reportSnapshotError(null);
+    return result;
   } catch (err) {
     // Chưa đăng nhập / thiếu quyền / mất mạng: không làm trắng giao diện,
-    // tạm dùng dữ liệu mock và ghi rõ lý do để dễ chẩn đoán.
+    // tạm dùng dữ liệu mock NHƯNG báo rõ lên UI (banner + nút thử lại).
     console.warn('[data] Không đọc được dữ liệu Supabase, tạm dùng mock:', err);
+    reportSnapshotError(err instanceof Error ? err.message : String(err));
     return mockSnap;
   }
+  // Đọc được bình thường -> tắt banner lỗi
+  reportSnapshotError(null);
 }
 
 /**
@@ -156,5 +172,6 @@ export function clearAuthCache(): void {
 
 // Tiện ích cho tầng xác thực / giao diện
 export { supabase, isSupabaseConfigured };
+export { toNotification } from './supabaseRepository';
 export { SupabaseGd1Repository } from './supabaseRepository';
 export type { CurrentUser, SaveMemberResult, ImportMembersResult } from './supabaseRepository';

@@ -376,18 +376,18 @@ export const SignupPage: React.FC<Props> = ({ email, suggestedName, suggestedAva
 
             {/* Điều hướng */}
             <div className="flex items-center justify-between pt-3 border-t border-slate-100">
-              <button type="button" onClick={step === 1 ? onSignOut : back}
+              <button title="Trang trước" type="button" onClick={step === 1 ? onSignOut : back}
                 className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-600 bg-slate-100 rounded-lg">
                 <ChevronLeft className="w-3.5 h-3.5" /> {step === 1 ? 'Đăng xuất' : 'Quay lại'}
               </button>
 
               {step < 4 ? (
-                <button type="button" onClick={next}
+                <button title="Tiếp tục" type="button" onClick={next}
                   className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-[#1F5FBF] hover:bg-[#1a4fa0] rounded-lg">
                   Tiếp tục <ChevronRight className="w-3.5 h-3.5" />
                 </button>
               ) : (
-                <button type="button" disabled={countdown > 0 || busy} onClick={submit}
+                <button title="Xác nhận thông tin đã nhập" type="button" disabled={countdown > 0 || busy} onClick={submit}
                   className={`inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white rounded-lg ${
                     countdown > 0 || busy ? 'bg-slate-400 cursor-not-allowed' : 'bg-emerald-600 hover:bg-emerald-700'
                   }`}>

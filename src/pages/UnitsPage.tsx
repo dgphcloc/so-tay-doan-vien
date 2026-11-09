@@ -1,5 +1,6 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef } from 'react';
 import { useApp } from '../context/AppContext';
+import { Avatar } from '../components/common/Avatar';
 import {
   Building2,
   Search,
@@ -20,16 +21,28 @@ import {
   Save,
   Check,
   Plus,
+  Download,
+  Upload,
+  FileSpreadsheet,
   Trash2,
+  Loader2,
 } from 'lucide-react';
 import { Unit, UnitTypeId } from '../types';
 import { formatDateVN } from '../mock/data';
 import { ReviewStatusBadge } from '../components/common/StatusBadge';
 import { canManageUnits } from '../utils/permissions';
+import {
+  exportUnitsExcel,
+  downloadUnitTemplate,
+  parseUnitsWorkbook,
+  type UnitParseResult,
+  type ParsedUnitRow,
+} from '../utils/unitsExcel';
 
 export const UnitsPage: React.FC = () => {
   const {
     units,
+    unitTypes,
     members,
     unitCommittees,
     warnings,
@@ -65,6 +78,85 @@ export const UnitsPage: React.FC = () => {
   const [isDeactivateConfirmOpen, setIsDeactivateConfirmOpen] = useState(false);
   // Create unit modal
   const [isCreateOpen, setIsCreateOpen] = useState(false);
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [importResult, setImportResult] = useState<UnitParseResult | null>(null);
+  const [importFileName, setImportFileName] = useState('');
+  const [isImporting, setIsImporting] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleExport = () => {
+    const secMap = new Map<string, string>();
+    unitRows.forEach(r => {
+      if (r.secretary) secMap.set(r.unit.id, `${r.secretary.full_name} (${r.secretary.phone})`);
+    });
+    exportUnitsExcel(units, unitTypes, secMap);
+    showToast({ title: 'Đã xuất file Excel chi đoàn', type: 'success' });
+  };
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const buf = await file.arrayBuffer();
+      const res = await parseUnitsWorkbook(buf, units, unitTypes);
+      setImportResult(res);
+      setImportFileName(file.name);
+      setIsImportModalOpen(true);
+    } catch (err) {
+      showToast({ title: 'Không đọc được file Excel', description: err instanceof Error ? err.message : '', type: 'error' });
+    }
+    e.target.value = '';
+  };
+
+  const handleConfirmImport = async () => {
+    if (!importResult) return;
+    const validRows = importResult.rows.filter((r: ParsedUnitRow) => r.isValid);
+    if (validRows.length === 0) {
+      showToast({ title: 'Không có dòng hợp lệ để nạp', type: 'error' });
+      return;
+    }
+
+    setIsImporting(true);
+    let added = 0;
+    let updated = 0;
+
+    try {
+      for (const row of validRows) {
+        if (row.isUpdate && row.existingId) {
+          await updateUnit(row.existingId, {
+            name: row.name,
+            unit_type_id: row.unit_type_id,
+            union_member_count: row.union_member_count,
+            youth_count: row.youth_count,
+            is_active: row.is_active,
+            note: row.note || undefined,
+          });
+          updated++;
+        } else {
+          const res = await createUnit({
+            name: row.name,
+            unit_type_id: row.unit_type_id,
+            note: row.note || undefined,
+            union_member_count: row.union_member_count,
+            youth_count: row.youth_count,
+          });
+          if (res.success) added++;
+        }
+      }
+
+      showToast({
+        title: 'Nhập Excel thành công!',
+        description: `Đã thêm mới ${added} chi đoàn và cập nhật ${updated} chi đoàn hiện có.`,
+        type: 'success',
+      });
+      setIsImportModalOpen(false);
+      setImportResult(null);
+    } catch (err) {
+      showToast({ title: 'Có lỗi trong quá trình nạp', description: err instanceof Error ? err.message : '', type: 'error' });
+    } finally {
+      setIsImporting(false);
+    }
+  };
   const [newUnitName, setNewUnitName] = useState('');
   const [newUnitType, setNewUnitType] = useState<UnitTypeId>('residential');
   const [newUnitNote, setNewUnitNote] = useState('');
@@ -77,6 +169,7 @@ export const UnitsPage: React.FC = () => {
 
   // Form edit unit info
   const [editName, setEditName] = useState('');
+  const [editType, setEditType] = useState<UnitTypeId>('residential');
   const [editNote, setEditNote] = useState('');
   const [editDeclaredCount, setEditDeclaredCount] = useState<number>(0);
   const [editYouthCount, setEditYouthCount] = useState<number>(0);
@@ -85,6 +178,7 @@ export const UnitsPage: React.FC = () => {
   React.useEffect(() => {
     if (selectedUnit) {
       setEditName(selectedUnit.name);
+      setEditType(selectedUnit.unit_type_id);
       setEditNote(selectedUnit.note || '');
       setEditDeclaredCount(selectedUnit.union_member_count);
       setEditYouthCount(selectedUnit.youth_count);
@@ -189,6 +283,7 @@ export const UnitsPage: React.FC = () => {
 
     updateUnit(selectedUnit.id, {
       name: editName,
+      unit_type_id: editType,
       note: editNote,
       union_member_count: Number(editDeclaredCount),
       youth_count: Number(editYouthCount),
@@ -199,6 +294,7 @@ export const UnitsPage: React.FC = () => {
         ? {
             ...prev,
             name: editName,
+            unit_type_id: editType,
             note: editNote,
             union_member_count: Number(editDeclaredCount),
             youth_count: Number(editYouthCount),
@@ -278,15 +374,42 @@ export const UnitsPage: React.FC = () => {
           </p>
         </div>
 
-        {canManage && (
-          <button
+        <div className="flex items-center gap-2 shrink-0">
+          <button title="Xuất Excel"
             type="button"
-            onClick={() => setIsCreateOpen(true)}
-            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs md:text-sm font-bold text-white bg-[#1F5FBF] hover:bg-[#154690] rounded-lg cursor-pointer shadow-xs shrink-0"
+            onClick={handleExport}
+            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 rounded-lg shadow-2xs transition-all cursor-pointer"
           >
-            <Plus className="w-4 h-4" /> Thêm chi đoàn
+            <Download className="w-4 h-4 text-slate-500" /> Xuất Excel
           </button>
-        )}
+
+          {canManage && (
+            <>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".xlsx"
+                className="hidden"
+                onChange={handleFileChange}
+              />
+              <button title="Nhập từ Excel"
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 rounded-lg shadow-2xs transition-all cursor-pointer"
+              >
+                <Upload className="w-4 h-4 text-[#1F5FBF]" /> Nhập từ Excel
+              </button>
+
+              <button title="Thêm chi đoàn"
+                type="button"
+                onClick={() => setIsCreateOpen(true)}
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs md:text-sm font-bold text-white bg-[#1F5FBF] hover:bg-[#154690] rounded-lg cursor-pointer shadow-xs"
+              >
+                <Plus className="w-4 h-4" /> Thêm chi đoàn
+              </button>
+            </>
+          )}
+        </div>
       </div>
 
       {/* Filter bar */}
@@ -308,6 +431,7 @@ export const UnitsPage: React.FC = () => {
             <button
               key={t}
               type="button"
+              title="Lọc danh sách chi đoàn theo loại hình"
               onClick={() => setTypeFilter(t)}
               className={`px-3 py-1.5 font-semibold rounded-lg transition-colors cursor-pointer shrink-0 ${
                 typeFilter === t ? 'bg-[#1F5FBF] text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
@@ -378,10 +502,11 @@ export const UnitsPage: React.FC = () => {
                     <td className="p-3.5 whitespace-nowrap">
                       {row.secretary ? (
                         <div className="flex items-center gap-2">
-                          <img
+                          <Avatar
                             src={row.secretary.avatar_url}
-                            alt=""
-                            className="w-6 h-6 rounded-full object-cover"
+                            name={row.secretary.full_name}
+                            seed={row.secretary.id}
+                            size={24}
                           />
                           <span className="font-semibold text-slate-800">{row.secretary.full_name}</span>
                         </div>
@@ -462,7 +587,7 @@ export const UnitsPage: React.FC = () => {
               </div>
 
               <div className="flex items-center gap-2">
-                <button
+                <button title="Đóng"
                   type="button"
                   onClick={() => setSelectedUnit(null)}
                   className="p-1 rounded-full text-slate-400 hover:text-slate-600 hover:bg-slate-200 cursor-pointer"
@@ -474,7 +599,7 @@ export const UnitsPage: React.FC = () => {
 
             {/* 5 Tabs: Thông tin | Đoàn viên | Ban chấp hành | Nhiệm vụ & tiêu chí | Điểm */}
             <div className="flex items-center gap-4 px-5 border-b border-slate-200 bg-white text-xs font-bold shrink-0 overflow-x-auto">
-              <button
+              <button title="1. Thông tin"
                 type="button"
                 onClick={() => setDetailTab('info')}
                 className={`py-3 border-b-2 transition-colors cursor-pointer shrink-0 ${
@@ -486,7 +611,7 @@ export const UnitsPage: React.FC = () => {
                 1. Thông tin
               </button>
 
-              <button
+              <button title="Số đoàn viên thực tế đang hoạt động"
                 type="button"
                 onClick={() => setDetailTab('members')}
                 className={`py-3 border-b-2 transition-colors cursor-pointer shrink-0 ${
@@ -498,7 +623,7 @@ export const UnitsPage: React.FC = () => {
                 2. Đoàn viên ({actualMembersOfSelected.length})
               </button>
 
-              <button
+              <button title="Số nhân sự Ban Chấp hành đang giữ chức"
                 type="button"
                 onClick={() => setDetailTab('committee')}
                 className={`py-3 border-b-2 transition-colors cursor-pointer shrink-0 ${
@@ -510,7 +635,7 @@ export const UnitsPage: React.FC = () => {
                 3. Ban chấp hành ({committeeOfSelected.length})
               </button>
 
-              <button
+              <button title="Số nhiệm vụ đã nộp / được giao"
                 type="button"
                 onClick={() => setDetailTab('tasks')}
                 className={`py-3 border-b-2 transition-colors cursor-pointer shrink-0 ${
@@ -523,7 +648,7 @@ export const UnitsPage: React.FC = () => {
               </button>
 
               {canViewScores && (
-              <button
+              <button title="Điểm thi đua theo bộ tiêu chí"
                 type="button"
                 onClick={() => setDetailTab('scores')}
                 className={`py-3 border-b-2 transition-colors cursor-pointer shrink-0 ${
@@ -550,6 +675,21 @@ export const UnitsPage: React.FC = () => {
                       onChange={e => setEditName(e.target.value)}
                       className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-lg text-sm font-semibold focus:outline-none focus:border-[#1F5FBF]"
                     />
+                  </div>
+
+                  <div>
+                    <label className="font-bold text-slate-800 block mb-1">Phân loại Chi đoàn:</label>
+                    <select
+                      value={editType}
+                      onChange={e => setEditType(e.target.value as UnitTypeId)}
+                      className="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-lg text-sm font-medium focus:outline-none focus:border-[#1F5FBF]"
+                    >
+                      <option value="residential">Dân cư</option>
+                      <option value="school">Trường học</option>
+                      <option value="health">Y tế</option>
+                      <option value="police">Công an</option>
+                      <option value="other">Khác</option>
+                    </select>
                   </div>
 
                   <div>
@@ -589,7 +729,7 @@ export const UnitsPage: React.FC = () => {
                   <div className="flex items-center justify-between pt-4 border-t border-slate-200">
                     <div className="flex items-center gap-2">
                       {selectedUnit.is_active ? (
-                        <button
+                        <button title="Ngừng hoạt động"
                           type="button"
                           onClick={() => setIsDeactivateConfirmOpen(true)}
                           className="inline-flex items-center gap-1.5 px-3 py-2 font-bold text-rose-700 bg-rose-50 hover:bg-rose-100 rounded-lg border border-rose-200 cursor-pointer"
@@ -601,7 +741,7 @@ export const UnitsPage: React.FC = () => {
                       )}
 
                       {canManage && (
-                        <button
+                        <button title="Xóa chi đoàn"
                           type="button"
                           onClick={() => setIsDeleteConfirmOpen(true)}
                           className="inline-flex items-center gap-1.5 px-3 py-2 font-bold text-rose-700 bg-white hover:bg-rose-50 rounded-lg border border-rose-300 cursor-pointer"
@@ -611,7 +751,7 @@ export const UnitsPage: React.FC = () => {
                       )}
                     </div>
 
-                    <button
+                    <button title="Lưu thông tin"
                       type="submit"
                       className="inline-flex items-center gap-1.5 px-4 py-2 font-bold text-white bg-[#1F5FBF] hover:bg-[#154690] rounded-lg cursor-pointer shadow-xs"
                     >
@@ -628,7 +768,7 @@ export const UnitsPage: React.FC = () => {
                     {actualMembersOfSelected.map(m => (
                       <div key={m.id} className="p-3 flex items-center justify-between hover:bg-slate-50">
                         <div className="flex items-center gap-2.5">
-                          <img src={m.avatar_url} alt="" className="w-8 h-8 rounded-full object-cover" />
+                          <Avatar src={m.avatar_url} name={m.full_name} seed={m.id} size={32} />
                           <div>
                             <p className="font-bold text-slate-900">{m.full_name}</p>
                             <p className="text-[11px] text-slate-400">
@@ -669,7 +809,7 @@ export const UnitsPage: React.FC = () => {
                       {committeeOfSelected.map(({ comm, member }) => (
                         <div key={comm.id} className="p-3.5 flex items-center justify-between">
                           <div className="flex items-center gap-3">
-                            <img src={member?.avatar_url} alt="" className="w-8 h-8 rounded-full object-cover" />
+                            <Avatar src={member?.avatar_url} name={member?.full_name} seed={member?.id} size={32} />
                             <div>
                               <p className="font-bold text-slate-900">{member?.full_name}</p>
                               <p className="text-[11px] text-[#1F5FBF] font-semibold">
@@ -743,20 +883,119 @@ export const UnitsPage: React.FC = () => {
               Bạn có chắc chắn muốn chuyển Chi đoàn "{selectedUnit?.name}" sang trạng thái Ngừng hoạt động? Chi đoàn sẽ không thể nhận thêm nhiệm vụ mới.
             </p>
             <div className="flex justify-end gap-2 pt-2">
-              <button
+              <button title="Hủy"
                 type="button"
                 onClick={() => setIsDeactivateConfirmOpen(false)}
                 className="px-3 py-1.5 text-xs font-semibold text-slate-600 bg-slate-100 rounded-lg cursor-pointer"
               >
                 Hủy
               </button>
-              <button
+              <button title="Xác nhận"
                 type="button"
                 onClick={handleConfirmDeactivate}
                 className="px-3 py-1.5 text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 rounded-lg cursor-pointer"
               >
                 Xác nhận
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* IMPORT EXCEL MODAL */}
+      {isImportModalOpen && importResult && (
+        <div className="fixed inset-0 z-60 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 animate-in fade-in">
+          <div className="bg-white rounded-2xl max-w-2xl w-full max-h-[90vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden text-xs">
+            <div className="p-4 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
+              <div>
+                <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
+                  <FileSpreadsheet className="w-5 h-5 text-emerald-600" />
+                  Đối soát danh sách Chi đoàn ({importFileName})
+                </h3>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  Tổng: <b>{importResult.totalRows}</b> dòng • <span className="text-emerald-700 font-bold">{importResult.createCount} thêm mới</span> • <span className="text-blue-700 font-bold">{importResult.updateCount} cập nhật đè</span> • <span className="text-rose-600 font-bold">{importResult.invalidCount} lỗi</span>
+                </p>
+              </div>
+              <button title="Đóng"
+                type="button"
+                onClick={() => setIsImportModalOpen(false)}
+                className="p-1 rounded-full text-slate-400 hover:text-slate-600"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-3 bg-blue-50/70 border-b border-blue-100 flex items-center justify-between gap-2">
+              <span className="text-blue-900 text-[11px]">
+                Quy tắc: Các chi đoàn có tên trùng trong hệ thống sẽ được <b>cập nhật đè</b> số đoàn viên & địa bàn.
+              </span>
+              <button title="Tải file mẫu"
+                type="button"
+                onClick={() => downloadUnitTemplate(unitTypes)}
+                className="px-2.5 py-1 text-[11px] font-bold text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 rounded-md shrink-0 flex items-center gap-1"
+              >
+                <Download className="w-3.5 h-3.5 text-[#1F5FBF]" /> Tải file mẫu
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4 space-y-2 max-h-[55vh]">
+              {importResult.rows.map((row: ParsedUnitRow) => (
+                <div
+                  key={row.rowNum}
+                  className={`p-2.5 rounded-lg border flex items-center justify-between gap-3 ${
+                    !row.isValid
+                      ? 'bg-rose-50 border-rose-200'
+                      : row.isUpdate
+                      ? 'bg-blue-50/50 border-blue-200'
+                      : 'bg-emerald-50/50 border-emerald-200'
+                  }`}
+                >
+                  <div className="min-w-0">
+                    <p className="font-bold text-slate-900 truncate">
+                      Dòng {row.rowNum}: {row.name}
+                    </p>
+                    <p className="text-[11px] text-slate-500">
+                      Loại: <b>{row.unit_type_name}</b> • ĐV khai báo: <b>{row.union_member_count}</b> • TN địa bàn: <b>{row.youth_count}</b> • {row.is_active ? 'Hoạt động' : 'Tạm dừng'}
+                    </p>
+                    {row.note && <p className="text-[10px] text-slate-400 italic">"{row.note}"</p>}
+                    {row.error && <p className="text-[10px] font-bold text-rose-600 mt-0.5">{row.error}</p>}
+                  </div>
+
+                  <span className={`px-2 py-0.5 rounded text-[10px] font-bold shrink-0 ${
+                    !row.isValid
+                      ? 'bg-rose-200 text-rose-800'
+                      : row.isUpdate
+                      ? 'bg-blue-200 text-blue-800'
+                      : 'bg-emerald-200 text-emerald-800'
+                  }`}>
+                    {!row.isValid ? 'Lỗi' : row.isUpdate ? 'Cập nhật' : 'Thêm mới'}
+                  </span>
+                </div>
+              ))}
+            </div>
+
+            <div className="p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-between">
+              <span className="text-slate-500 text-[11px]">
+                Sẵn sàng nạp {importResult.createCount + importResult.updateCount} dòng hợp lệ
+              </span>
+              <div className="flex items-center gap-2">
+                <button title="Hủy"
+                  type="button"
+                  onClick={() => setIsImportModalOpen(false)}
+                  className="px-3 py-1.5 font-semibold text-slate-600 bg-white border border-slate-200 rounded-lg"
+                >
+                  Hủy
+                </button>
+                <button title="Đang xử lý"
+                  type="button"
+                  disabled={isImporting || (importResult.createCount + importResult.updateCount === 0)}
+                  onClick={handleConfirmImport}
+                  className="px-4 py-2 font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg disabled:opacity-50 flex items-center gap-1.5"
+                >
+                  {isImporting && <Loader2 className="w-4 h-4 animate-spin" />}
+                  {isImporting ? 'Đang nạp…' : 'Xác nhận nạp vào CSDL'}
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -829,7 +1068,7 @@ export const UnitsPage: React.FC = () => {
             </div>
 
             <div className="flex justify-end gap-2 pt-2">
-              <button
+              <button title="Hủy"
                 type="button"
                 onClick={() => setIsCreateOpen(false)}
                 className="px-3 py-1.5 text-xs font-semibold text-slate-600 bg-slate-100 rounded-lg cursor-pointer"
@@ -838,6 +1077,7 @@ export const UnitsPage: React.FC = () => {
               </button>
               <button
                 type="submit"
+                title="Tạo chi đoàn mới với tên vừa nhập"
                 disabled={creating}
                 className="px-3 py-1.5 text-xs font-bold text-white bg-[#1F5FBF] hover:bg-[#154690] rounded-lg cursor-pointer disabled:opacity-60"
               >
@@ -858,7 +1098,7 @@ export const UnitsPage: React.FC = () => {
               Chỉ xóa được khi chi đoàn không còn đoàn viên và dữ liệu Ban chấp hành.
             </p>
             <div className="flex justify-end gap-2 pt-2">
-              <button
+              <button title="Hủy"
                 type="button"
                 onClick={() => setIsDeleteConfirmOpen(false)}
                 className="px-3 py-1.5 text-xs font-semibold text-slate-600 bg-slate-100 rounded-lg cursor-pointer"
@@ -867,6 +1107,7 @@ export const UnitsPage: React.FC = () => {
               </button>
               <button
                 type="button"
+                title="Xóa vĩnh viễn chi đoàn này"
                 onClick={handleConfirmDelete}
                 disabled={deleting}
                 className="px-3 py-1.5 text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 rounded-lg cursor-pointer disabled:opacity-60"

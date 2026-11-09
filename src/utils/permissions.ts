@@ -68,6 +68,10 @@ export const ROUTE_ACCESS: Record<string, RoleId[]> = {
   '/cau-hinh': ['super_admin', 'admin'],
   '/tai-khoan': ['super_admin'],
   '/nhat-ky': ['super_admin'],
+  '/danh-gia': ['super_admin', 'admin', 'staff', 'unit_secretary', 'member'],
+  '/doan-phi': ['super_admin', 'admin', 'staff', 'unit_secretary', 'member'],
+  '/thiet-lap': ['super_admin', 'admin'],
+  '/bao-cao-chi-doan': ['super_admin', 'admin', 'staff', 'unit_secretary'],
 };
 
 /** Vai trò có được vào đường dẫn này không. */

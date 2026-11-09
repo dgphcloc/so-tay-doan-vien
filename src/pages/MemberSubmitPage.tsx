@@ -1,10 +1,12 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { QrScanModal } from '../components/tasks/QrScanModal';
+import { UnitKpiBoard } from '../components/criteria/UnitKpiBoard';
 import { useApp } from '../context/AppContext';
 import { sha256Hex, sha256HexOfString, getGpsPosition, pickImageFile, pickAnyFile, captureFromCamera } from '../utils/evidence';
 import type { EvidenceInput } from '../data/repository';
-import { formatDateVN } from '../mock/data';
+import { formatDateVN, formatDateTimeVN } from '../mock/data';
+import { parseMapLink, haversineMeters } from '../utils/geo';
 import {
   Camera, ScanLine, MapPin, CheckCircle2, AlertTriangle, Loader2, ClipboardList, ImagePlus, X,
   RefreshCw, FileText, Link2, StickyNote, FileUp, Upload, ArrowLeft, BadgeCheck,
@@ -21,8 +23,10 @@ interface ReadyEvidence extends EvidenceInput {
  */
 export const MemberSubmitPage: React.FC = () => {
   const {
-    currentUser, currentMember, currentRole, yearlySettings,
+    currentUser, currentMember, currentRole, yearlySettings, unitCommittees,
+    subCriteria, tasks, taskResults,
     listMyFeed, uploadEvidence, submitMemberResult, listMemberSubmissionEvidences, showToast,
+    getUnitCriterionProgress,
   } = useApp();
 
   const [searchParams] = useSearchParams();
@@ -34,6 +38,26 @@ export const MemberSubmitPage: React.FC = () => {
   const maxLinks = yearlySettings.max_links ?? 5;
 
   const [loading, setLoading] = useState(true);
+
+  // KPI Đoàn xã giao cho chi đoàn — hiện cho bí thư / phó bí thư.
+  // Nhận diện theo CẢ HAI nguồn để không bị lệch khi profile.role_id chưa cập nhật:
+  //   (1) quyền tài khoản = unit_secretary
+  //   (2) chức vụ trong hồ sơ đoàn viên = Bí thư / Phó Bí thư
+  const isSecretary = (() => {
+    if (currentRole === 'unit_secretary') return true;
+    if (currentMember?.current_position === 'secretary' || currentMember?.current_position === 'deputy_secretary') return true;
+    // Nguồn thứ 3: có tên trong Ban Chấp hành đang giữ chức Bí thư / Phó Bí thư của chi đoàn
+    if (!currentMember) return false;
+    return unitCommittees.some(
+      c => String(c.member_id) === String(currentMember.id)
+        && !c.term_end
+        && (c.position === 'secretary' || c.position === 'deputy_secretary')
+    );
+  })();
+  const [kpis, setKpis] = useState<Array<{
+    subCriterionId: string; criterionName: string; subName: string;
+    maxScore: number; totalTasks: number; doneTasks: number; pendingTasks: number;
+  }>>([]);
   const [feed, setFeed] = useState<Awaited<ReturnType<typeof listMyFeed>> | null>(null);
   const [busy, setBusy] = useState(false);
   const [scanOpen, setScanOpen] = useState(false);
@@ -52,6 +76,11 @@ export const MemberSubmitPage: React.FC = () => {
     setLoading(true);
     try {
       setFeed(await listMyFeed());
+      if (isSecretary && unitId) {
+        setKpis(await getUnitCriterionProgress(unitId));
+      } else {
+        setKpis([]);
+      }
     } catch (e) {
       showToast({ title: 'Không tải được danh sách nhiệm vụ', description: e instanceof Error ? e.message : '', type: 'error' });
     } finally {
@@ -59,7 +88,12 @@ export const MemberSubmitPage: React.FC = () => {
     }
   };
 
-  useEffect(() => { reload(); /* eslint-disable-next-line */ }, []);
+  // Nạp lại khi context đã sẵn dữ liệu (subCriteria/tasks/taskResults đến bất đồng bộ)
+  // hoặc khi đổi chi đoàn / quyền.
+  useEffect(() => {
+    reload();
+    /* eslint-disable-next-line */
+  }, [unitId, isSecretary, subCriteria.length, tasks.length, taskResults.length]);
 
   const activeItem = useMemo(
     () => feed?.find(f => f.task.id === taskParam) ?? null,
@@ -97,36 +131,6 @@ export const MemberSubmitPage: React.FC = () => {
     /* eslint-disable-next-line */
   }, [mySubmission?.id]);
 
-  /**
-   * Tách toạ độ từ link Google Maps. Hiểu các dạng phổ biến:
-   *   .../@10.123,106.456,15z          (link bản đồ)
-   *   ...?q=10.123,106.456             (link tìm kiếm)
-   *   .../place/10.123,106.456         (link địa điểm)
-   *   https://maps.google.com/?ll=10.123,106.456
-   */
-  const parseMapLink = (raw: string): { lat: number; lng: number } | null => {
-    const text = raw.trim();
-    if (!text) return null;
-    // Bắt cặp số thực cách nhau dấu phẩy, có thể kèm khoảng trắng
-    const candidates = [
-      /@(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/,
-      /[?&](?:q|ll|query|center)=(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/,
-      /\/place\/(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/,
-      /(-?\d+(?:\.\d+)?),\s*(-?\d+(?:\.\d+)?)/,
-    ];
-    for (const re of candidates) {
-      const m = text.match(re);
-      if (m) {
-        const lat = Number(m[1]);
-        const lng = Number(m[2]);
-        if (Number.isFinite(lat) && Number.isFinite(lng) && lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) {
-          return { lat, lng };
-        }
-      }
-    }
-    return null;
-  };
-
   /** Dán link Google Maps -> tự điền vào ô vĩ độ / kinh độ. */
   const handlePasteMapLink = (value: string) => {
     setMapLink(value);
@@ -156,14 +160,23 @@ export const MemberSubmitPage: React.FC = () => {
       if (!file) return;
       setBusy(true);
       let lat: number | null = null, lng: number | null = null;
+      let accuracy: number | null = null;
+      // 'gps' = lấy từ thiết bị; 'manual' = nhập tay; 'link' = dán Google Maps.
+      // Cán bộ thấy nhãn "Không xác thực" khi nguồn khác 'gps'.
+      let coordSource: 'gps' | 'manual' | 'link' | null = null;
       try {
         const pos = await getGpsPosition();
         lat = pos.lat; lng = pos.lng;
+        accuracy = pos.accuracy ?? null;
+        coordSource = 'gps';
       } catch (e) {
         // Trình duyệt chặn định vị: dùng toạ độ nhập tay nếu người dùng đã điền
         const manual = manualCoords();
         lat = manual.lat; lng = manual.lng;
-        if (lat === null) {
+        if (lat !== null) {
+          // Nếu toạ độ đến từ ô dán link thì ghi đúng nguồn 'link'
+          coordSource = mapLink.trim() && parseMapLink(mapLink) ? 'link' : 'manual';
+        } else {
           showToast({
             title: 'Không lấy được GPS',
             description: `${e instanceof Error ? e.message : ''} Bạn có thể nhập toạ độ bằng tay ở ô bên dưới.`,
@@ -175,6 +188,7 @@ export const MemberSubmitPage: React.FC = () => {
       setPhotos(prev => [...prev, {
         evidenceType: 'photo', url: up.url, storagePath: up.storagePath, fileName: file.name,
         fileHash: hash, lat, lng, source, label: file.name,
+        accuracyM: accuracy, coordSource,
       }]);
       showToast({ title: 'Đã thêm ảnh minh chứng', type: 'success' });
     } catch (e) {
@@ -214,7 +228,8 @@ export const MemberSubmitPage: React.FC = () => {
       showToast({ title: 'Toạ độ chưa hợp lệ', description: 'Nhập vĩ độ (-90..90) và kinh độ (-180..180).', type: 'error' });
       return;
     }
-    setPhotos(prev => prev.map(p => (p.lat === null || p.lng === null ? { ...p, lat, lng } : p)));
+    const src: 'manual' | 'link' = mapLink.trim() && parseMapLink(mapLink) ? 'link' : 'manual';
+    setPhotos(prev => prev.map(p => (p.lat === null || p.lng === null ? { ...p, lat, lng, coordSource: src } : p)));
     showToast({ title: 'Đã gán toạ độ cho ảnh thiếu GPS', type: 'success' });
   };
 
@@ -276,6 +291,28 @@ export const MemberSubmitPage: React.FC = () => {
   }
 
   const linkCount = linksText.split(',').map(s => s.trim()).filter(Boolean).length;
+
+  /**
+   * Bán kính áp dụng: ưu tiên bán kính riêng của nhiệm vụ, không có thì dùng
+   * cấu hình năm. Khớp đúng logic trigger `private.calc_checkin` trong database.
+   */
+  const appliedRadius = activeTask?.radius_m ?? yearlySettings.default_radius_m ?? 100;
+
+  /**
+   * Khoảng cách NHÁP tính ở trình duyệt — chỉ để nhắc đoàn viên trước khi nộp.
+   * Kết quả CHÍNH THỨC do trigger trong database tính lại, giá trị này không gửi lên.
+   * Lấy ảnh gần điểm tổ chức nhất trong số ảnh đã có GPS.
+   */
+  const draftDistance: number | null = (() => {
+    if (!activeTask || activeTask.lat === null || activeTask.lng === null) return null;
+    const withGps = photos.filter(p => p.lat !== null && p.lng !== null);
+    if (withGps.length === 0) return null;
+    const dists = withGps.map(p => haversineMeters(
+      { lat: activeTask.lat as number, lng: activeTask.lng as number },
+      { lat: p.lat as number, lng: p.lng as number }
+    ));
+    return Math.min(...dists);
+  })();
   const locked = mySubmission?.status === 'approved';
 
   // Chưa chọn nhiệm vụ: liệt kê để đoàn viên chọn
@@ -291,13 +328,25 @@ export const MemberSubmitPage: React.FC = () => {
           <p className="text-xs md:text-sm text-slate-500 mt-0.5">
             Chọn nhiệm vụ để nộp minh chứng (ảnh + GPS, tệp, link, ghi chú). Bạn cũng có thể mở từ link/QR do bí thư gửi.
           </p>
-          <button
+          <button title="Quét QR nhiệm vụ"
             type="button"
             onClick={() => setScanOpen(true)}
             className="mt-2 inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-white bg-[#1F5FBF] hover:bg-[#1a4fa0] rounded-lg"
           >
             <ScanLine className="w-4 h-4" /> Quét QR nhiệm vụ
           </button>
+        </div>
+
+        {/* ===== KPI ĐOÀN XÃ GIAO CHO CHI ĐOÀN (chỉ bí thư / phó bí thư) ===== */}
+        {isSecretary && (
+          <UnitKpiBoard kpis={kpis} unitId={unitId ?? ''} onCreated={reload} />
+        )}
+
+        {/* ===== NHIỆM VỤ CẦN NỘP ===== */}
+        <div className="flex items-center gap-2">
+          <h2 className="text-sm font-bold text-slate-800">
+            {isSecretary ? 'Nhiệm vụ chi đoàn cần nộp' : 'Nhiệm vụ cần nộp'}
+          </h2>
         </div>
 
         {!feed || feed.length === 0 ? (
@@ -398,15 +447,43 @@ export const MemberSubmitPage: React.FC = () => {
       )}
 
       {(activeTask.lat !== null && activeTask.lng !== null) && (
-        <a
-          href={`https://www.google.com/maps/search/?api=1&query=${activeTask.lat},${activeTask.lng}`}
-          target="_blank"
-          rel="noreferrer"
-          className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-[#1F5FBF] bg-blue-50 border border-blue-200 hover:bg-blue-100 rounded-lg"
-        >
-          <MapPin className="w-3.5 h-3.5" />
-          Xem vị trí trên Google Maps ({activeTask.lat.toFixed(5)}, {activeTask.lng.toFixed(5)})
-        </a>
+        <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl space-y-2 text-xs">
+          <p className="font-bold text-[#1F5FBF] flex items-center gap-1.5">
+            <MapPin className="w-3.5 h-3.5" /> Điểm danh vị trí
+          </p>
+          <p className="text-slate-700">
+            Bạn cần ở trong bán kính <b>{appliedRadius} m</b> quanh điểm tổ chức.
+            Nên dùng điện thoại và bật định vị để có toạ độ chính xác.
+          </p>
+          <a
+            href={`https://www.google.com/maps/search/?api=1&query=${activeTask.lat},${activeTask.lng}`}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-1 font-bold text-[#1F5FBF] hover:underline"
+          >
+            <MapPin className="w-3 h-3" /> Xem vị trí trên Google Maps
+          </a>
+
+          {/* Nhắc nháp khi mọi ảnh đã có GPS. Kết quả chính thức do DB tính. */}
+          {draftDistance !== null && (
+            <p className={`font-semibold flex items-start gap-1 ${
+              draftDistance > appliedRadius ? 'text-rose-700' : 'text-emerald-700'
+            }`}>
+              {draftDistance > appliedRadius
+                ? <>⚠️ Có vẻ bạn đang <b>ngoài phạm vi</b> (ước tính ~{Math.round(draftDistance)} m). Kết quả chính thức do hệ thống tính khi bạn nộp.</>
+                : <>✓ Ước tính bạn đang <b>trong phạm vi</b> (~{Math.round(draftDistance)} m). Kết quả chính thức do hệ thống tính khi bạn nộp.</>}
+            </p>
+          )}
+
+          {activeTask.attendance_open_at || activeTask.attendance_close_at ? (
+            <p className="text-[11px] text-slate-600">
+              Điểm danh mở
+              {activeTask.attendance_open_at && ` từ ${formatDateTimeVN(activeTask.attendance_open_at)}`}
+              {activeTask.attendance_close_at && ` đến ${formatDateTimeVN(activeTask.attendance_close_at)}`}.
+              Nộp ngoài khung vẫn được nhưng sẽ gắn nhãn "Ngoài giờ".
+            </p>
+          ) : null}
+        </div>
       )}
 
       {locked ? (
@@ -455,7 +532,7 @@ export const MemberSubmitPage: React.FC = () => {
 
             <div className="flex items-center justify-between gap-2">
               <p className="text-[11px] text-slate-400">Bấm "Gán toạ độ" để điền vào các ảnh đang thiếu GPS.</p>
-              <button type="button" onClick={applyManualToPhotos}
+              <button title="Gán toạ độ" type="button" onClick={applyManualToPhotos}
                 className="px-3 py-1.5 text-[11px] font-bold text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50">
                 Gán toạ độ
               </button>
@@ -469,11 +546,11 @@ export const MemberSubmitPage: React.FC = () => {
                 <ImagePlus className="w-3.5 h-3.5" /> Ảnh minh chứng ({photos.length}/{maxPhotos})
               </span>
               <div className="flex items-center gap-2">
-                <button type="button" disabled={busy || photos.length >= maxPhotos} onClick={() => addPhoto('upload')}
+                <button title="Chọn ảnh" type="button" disabled={busy || photos.length >= maxPhotos} onClick={() => addPhoto('upload')}
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-bold text-white bg-[#1F5FBF] rounded-lg disabled:opacity-50">
                   <ImagePlus className="w-3.5 h-3.5" /> Chọn ảnh
                 </button>
-                <button type="button" disabled={busy || photos.length >= maxPhotos} onClick={() => addPhoto('camera')}
+                <button title="Chụp ảnh" type="button" disabled={busy || photos.length >= maxPhotos} onClick={() => addPhoto('camera')}
                   className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-bold text-slate-700 bg-white border border-slate-300 rounded-lg disabled:opacity-50">
                   <Camera className="w-3.5 h-3.5" /> Chụp ảnh
                 </button>
@@ -484,13 +561,20 @@ export const MemberSubmitPage: React.FC = () => {
                 {photos.map((ev, i) => (
                   <div key={i} className="relative border border-slate-200 rounded-lg overflow-hidden bg-white">
                     <img src={ev.url} alt={ev.label} className="w-full h-24 object-cover" />
-                    <button type="button" onClick={() => setPhotos(prev => prev.filter((_, j) => j !== i))}
+                    <button title="Đóng" type="button" onClick={() => setPhotos(prev => prev.filter((_, j) => j !== i))}
                       className="absolute top-1 right-1 bg-white/90 rounded-full p-0.5 text-rose-600"><X className="w-3.5 h-3.5" /></button>
                     <div className="p-1.5">
                       {ev.lat !== null && ev.lng !== null ? (
-                        <span className="text-[9px] text-emerald-700 flex items-center gap-0.5">
-                          <MapPin className="w-2.5 h-2.5" /> {ev.lat.toFixed(5)}, {ev.lng.toFixed(5)}
-                        </span>
+                        <div className="space-y-0.5">
+                          <span className="text-[9px] text-emerald-700 flex items-center gap-0.5">
+                            <MapPin className="w-2.5 h-2.5" /> {ev.lat.toFixed(5)}, {ev.lng.toFixed(5)}
+                          </span>
+                          {ev.coordSource && ev.coordSource !== 'gps' && (
+                            <span className="text-[9px] text-amber-700 font-semibold flex items-center gap-0.5">
+                              <AlertTriangle className="w-2.5 h-2.5" /> Không xác thực
+                            </span>
+                          )}
+                        </div>
                       ) : (
                         <span className="text-[9px] text-amber-700 flex items-center gap-0.5">
                           <AlertTriangle className="w-2.5 h-2.5" /> Thiếu GPS
@@ -514,7 +598,7 @@ export const MemberSubmitPage: React.FC = () => {
               <span className="font-bold text-slate-800 flex items-center gap-1.5">
                 <FileUp className="w-3.5 h-3.5" /> Tệp minh chứng ({files.length}/{maxFiles})
               </span>
-              <button type="button" disabled={busy || files.length >= maxFiles} onClick={addFile}
+              <button title="Chọn tệp" type="button" disabled={busy || files.length >= maxFiles} onClick={addFile}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-bold text-slate-700 bg-white border border-slate-300 rounded-lg disabled:opacity-50">
                 <FileUp className="w-3.5 h-3.5" /> Chọn tệp
               </button>
@@ -526,7 +610,7 @@ export const MemberSubmitPage: React.FC = () => {
                     <span className="text-[11px] text-slate-700 flex items-center gap-1.5 truncate">
                       <FileText className="w-3.5 h-3.5 shrink-0" /> {ev.label}
                     </span>
-                    <button type="button" onClick={() => setFiles(prev => prev.filter((_, j) => j !== i))} className="text-rose-600">
+                    <button title="Đóng" type="button" onClick={() => setFiles(prev => prev.filter((_, j) => j !== i))} className="text-rose-600">
                       <X className="w-3.5 h-3.5" />
                     </button>
                   </div>
@@ -559,7 +643,7 @@ export const MemberSubmitPage: React.FC = () => {
             <span className="text-[11px] text-slate-400">
               Người nộp: {currentMember.full_name}{currentRole === 'member' ? '' : ' (hỗ trợ)'}
             </span>
-            <button type="button" disabled={busy} onClick={handleSubmit}
+            <button title="Hoàn thành" type="button" disabled={busy} onClick={handleSubmit}
               className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg disabled:opacity-60">
               {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
               {mySubmission ? 'Nộp lại' : 'Nộp minh chứng'}
