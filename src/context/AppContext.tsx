@@ -112,6 +112,15 @@ interface AppContextType {
   reviewUnitReport: (id: string, approve: boolean, note?: string) => ReturnType<typeof repository.reviewUnitReport>;
   listUnitReportEvidences: (reportId: string) => Promise<Evidence[]>;
 
+  // Tạo tài khoản đăng nhập cho đoàn viên (chỉ admin) — gọi Edge Function
+  createMemberAccount: (input: {
+    email: string; password?: string; memberId: string; fullName: string; roleId?: string;
+  }) => ReturnType<typeof repository.createMemberAccount>;
+  bulkCreateMemberAccounts: (input: {
+    members: Array<{ memberId: string; fullName: string; unitId: string; unitName: string }>;
+    emailDomain: string; password?: string; roleId?: string;
+  }) => ReturnType<typeof repository.bulkCreateMemberAccounts>;
+
   // Dữ liệu đọc từ Repository
   units: Unit[];
   unitTypes: UnitType[];
@@ -1084,6 +1093,28 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     []
   );
 
+  // Tài khoản đăng nhập — gọi Edge Function, sau đó nạp lại để profile mới hiện ra
+  const createMemberAccount = useCallback(
+    async (input: { email: string; password?: string; memberId: string; fullName: string; roleId?: string }) => {
+      const res = await repository.createMemberAccount(input);
+      if (res.ok) await refreshData();
+      return res;
+    },
+    [refreshData]
+  );
+
+  const bulkCreateMemberAccounts = useCallback(
+    async (input: {
+      members: Array<{ memberId: string; fullName: string; unitId: string; unitName: string }>;
+      emailDomain: string; password?: string; roleId?: string;
+    }) => {
+      const res = await repository.bulkCreateMemberAccounts(input);
+      if (res.ok) await refreshData();
+      return res;
+    },
+    [refreshData]
+  );
+
   const listTaskParticipants = useCallback(
     (taskId: string, unitId: string) => repository.listTaskParticipants(taskId, unitId),
     []
@@ -1601,6 +1632,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     submitUnitReport,
     reviewUnitReport,
     listUnitReportEvidences,
+    createMemberAccount,
+    bulkCreateMemberAccounts,
     listTaskParticipants,
     listTaskParticipantsAll,
     listEvaluationPeriods,

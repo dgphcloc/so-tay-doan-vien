@@ -1,6 +1,6 @@
-import React from 'react';
-import { NavLink } from 'react-router-dom';
-import { useApp } from '../../context/AppContext';
+import React from "react";
+import { NavLink } from "react-router-dom";
+import { useApp } from "../../context/AppContext";
 import {
   LayoutDashboard,
   FileCheck2,
@@ -22,35 +22,73 @@ import {
   BadgeCheck,
   CreditCard,
   Sparkles,
+  QrCode,
   ClipboardList,
-} from 'lucide-react';
+} from "lucide-react";
 
 export const Sidebar: React.FC = () => {
   const { currentRole, pendingCount, units, totalMembers } = useApp();
 
   // Kiểm tra hiển thị từng menu item theo quyền
   const canSee = (menuKey: string) => {
-    if (currentRole === 'super_admin') return true;
+    if (currentRole === "super_admin") return true;
 
-    if (currentRole === 'admin') {
-      if (menuKey === 'accounts' || menuKey === 'logs') return false;
+    if (currentRole === "admin") {
+      if (menuKey === "accounts" || menuKey === "logs") return false;
       return true;
     }
 
-    if (currentRole === 'staff') {
+    if (currentRole === "staff") {
       // staff chỉ xem: Tổng quan, Nhiệm vụ, Tiêu chí, Chi đoàn, Đoàn viên, Ban chấp hành, Báo cáo
-      const staffAllowed = ['overview', 'tasks', 'criteria', 'units', 'members', 'committee', 'reports', 'journal', 'evaluation', 'union_fee', 'unit_report'];
+      const staffAllowed = [
+        "overview",
+        "tasks",
+        "criteria",
+        "units",
+        "members",
+        "committee",
+        "reports",
+        "journal",
+        "evaluation",
+        "union_fee",
+        "unit_report",
+        "qr",
+      ];
       return staffAllowed.includes(menuKey);
     }
 
-    if (currentRole === 'unit_secretary') {
+    if (currentRole === "unit_secretary") {
       // Bí thư chi đoàn: Nộp minh chứng, Bảng tin, Nhiệm vụ (của chi đoàn mình), Chi đoàn của mình
-      const allowed = ['overview', 'submit', 'personal', 'feed', 'review', 'profile', 'journal', 'tasks', 'units', 'evaluation', 'union_fee', 'unit_report'];
+      const allowed = [
+        "overview",
+        "submit",
+        "personal",
+        "feed",
+        "review",
+        "profile",
+        "journal",
+        "tasks",
+        "units",
+        "evaluation",
+        "union_fee",
+        "unit_report",
+        "qr",
+      ];
       return allowed.includes(menuKey);
     }
 
-    if (currentRole === 'member') {
-      const allowed = ['overview', 'personal', 'feed', 'profile', 'journal', 'evaluation', 'union_fee', 'unit_report'];
+    if (currentRole === "member") {
+      const allowed = [
+        "overview",
+        "personal",
+        "feed",
+        "profile",
+        "journal",
+        "evaluation",
+        "union_fee",
+        "unit_report",
+        "qr",
+      ];
       return allowed.includes(menuKey);
     }
 
@@ -60,8 +98,8 @@ export const Sidebar: React.FC = () => {
   const navItemClass = ({ isActive }: { isActive: boolean }) =>
     `flex items-center justify-between px-3 py-2 text-xs md:text-sm font-medium rounded-xl transition-all ${
       isActive
-        ? 'bg-[#1F5FBF] text-white shadow-xs font-semibold'
-        : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100/90'
+        ? "bg-doan text-white shadow-xs font-semibold"
+        : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/90"
     }`;
 
   return (
@@ -78,11 +116,19 @@ export const Sidebar: React.FC = () => {
         </div>
 
         {/* Nhóm: Công việc */}
-        {(canSee('submit') || canSee('personal') || canSee('feed') || canSee('review') || canSee('tasks') || canSee('criteria') || canSee('reminders')) && (
+        {(canSee("submit") ||
+          canSee("personal") ||
+          canSee("feed") ||
+          canSee("review") ||
+          canSee("tasks") ||
+          canSee("criteria") ||
+          canSee("reminders")) && (
           <div className="space-y-1">
-            <p className="px-3 text-[11px] font-bold text-slate-400 uppercase tracking-wider">Công việc</p>
+            <p className="px-3 text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+              Công việc
+            </p>
 
-            {canSee('submit') && (
+            {canSee("submit") && (
               <NavLink to="/nop-minh-chung" className={navItemClass}>
                 <div className="flex items-center gap-2.5">
                   <Upload className="w-4 h-4 shrink-0" />
@@ -91,7 +137,7 @@ export const Sidebar: React.FC = () => {
               </NavLink>
             )}
 
-            {canSee('personal') && (
+            {canSee("personal") && (
               <NavLink to="/nop-ca-nhan" className={navItemClass}>
                 <div className="flex items-center gap-2.5">
                   <Camera className="w-4 h-4 shrink-0" />
@@ -100,7 +146,7 @@ export const Sidebar: React.FC = () => {
               </NavLink>
             )}
 
-            {canSee('feed') && (
+            {canSee("feed") && (
               <NavLink to="/bang-tin" className={navItemClass}>
                 <div className="flex items-center gap-2.5">
                   <Newspaper className="w-4 h-4 shrink-0" />
@@ -109,7 +155,7 @@ export const Sidebar: React.FC = () => {
               </NavLink>
             )}
 
-            {canSee('review') && (
+            {canSee("review") && (
               <NavLink to="/duyet" className={navItemClass}>
                 <div className="flex items-center gap-2.5">
                   <FileCheck2 className="w-4 h-4 shrink-0" />
@@ -123,7 +169,7 @@ export const Sidebar: React.FC = () => {
               </NavLink>
             )}
 
-            {canSee('tasks') && (
+            {canSee("tasks") && (
               <NavLink to="/nhiem-vu" className={navItemClass}>
                 <div className="flex items-center gap-2.5">
                   <CheckSquare className="w-4 h-4 shrink-0" />
@@ -132,7 +178,7 @@ export const Sidebar: React.FC = () => {
               </NavLink>
             )}
 
-            {canSee('criteria') && (
+            {canSee("criteria") && (
               <NavLink to="/tieu-chi" className={navItemClass}>
                 <div className="flex items-center gap-2.5">
                   <Award className="w-4 h-4 shrink-0" />
@@ -141,7 +187,7 @@ export const Sidebar: React.FC = () => {
               </NavLink>
             )}
 
-            {canSee('evaluation') && (
+            {canSee("evaluation") && (
               <NavLink to="/danh-gia" className={navItemClass}>
                 <div className="flex items-center gap-2.5">
                   <BadgeCheck className="w-4 h-4 shrink-0" />
@@ -150,7 +196,7 @@ export const Sidebar: React.FC = () => {
               </NavLink>
             )}
 
-            {canSee('union_fee') && (
+            {canSee("union_fee") && (
               <NavLink to="/doan-phi" className={navItemClass}>
                 <div className="flex items-center gap-2.5">
                   <CreditCard className="w-4 h-4 shrink-0" />
@@ -159,7 +205,7 @@ export const Sidebar: React.FC = () => {
               </NavLink>
             )}
 
-            {canSee('reminders') && (
+            {canSee("reminders") && (
               <NavLink to="/nhac-nho" className={navItemClass}>
                 <div className="flex items-center gap-2.5">
                   <BellRing className="w-4 h-4 shrink-0" />
@@ -171,11 +217,13 @@ export const Sidebar: React.FC = () => {
         )}
 
         {/* Nhóm: Tổ chức */}
-        {(canSee('units') || canSee('members') || canSee('committee')) && (
+        {(canSee("units") || canSee("members") || canSee("committee")) && (
           <div className="space-y-1">
-            <p className="px-3 text-[11px] font-bold text-slate-400 uppercase tracking-wider">Tổ chức</p>
+            <p className="px-3 text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+              Tổ chức
+            </p>
 
-            {canSee('units') && (
+            {canSee("units") && (
               <NavLink to="/chi-doan" className={navItemClass}>
                 <div className="flex items-center gap-2.5">
                   <Building2 className="w-4 h-4 shrink-0" />
@@ -184,7 +232,7 @@ export const Sidebar: React.FC = () => {
               </NavLink>
             )}
 
-            {canSee('members') && (
+            {canSee("members") && (
               <NavLink to="/doan-vien" className={navItemClass}>
                 <div className="flex items-center gap-2.5">
                   <Users className="w-4 h-4 shrink-0" />
@@ -193,7 +241,7 @@ export const Sidebar: React.FC = () => {
               </NavLink>
             )}
 
-            {canSee('committee') && (
+            {canSee("committee") && (
               <NavLink to="/ban-chap-hanh" className={navItemClass}>
                 <div className="flex items-center gap-2.5">
                   <UserCheck className="w-4 h-4 shrink-0" />
@@ -205,16 +253,18 @@ export const Sidebar: React.FC = () => {
         )}
 
         {/* Nhóm: Báo cáo */}
-        {canSee('reports') && (
+        {canSee("reports") && (
           <div className="space-y-1">
-            <p className="px-3 text-[11px] font-bold text-slate-400 uppercase tracking-wider">Báo cáo</p>
+            <p className="px-3 text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+              Báo cáo
+            </p>
             <NavLink to="/bao-cao" className={navItemClass}>
               <div className="flex items-center gap-2.5">
                 <BarChart3 className="w-4 h-4 shrink-0" />
                 <span>Báo cáo</span>
               </div>
             </NavLink>
-            {canSee('unit_report') && (
+            {canSee("unit_report") && (
               <NavLink to="/bao-cao-chi-doan" className={navItemClass}>
                 <div className="flex items-center gap-2.5">
                   <ClipboardList className="w-4 h-4 shrink-0" />
@@ -224,13 +274,28 @@ export const Sidebar: React.FC = () => {
             )}
           </div>
         )}
-
-        {/* Nhóm: Hệ thống */}
-        {(canSee('settings') || canSee('accounts') || canSee('logs')) && (
+        {/* Nhóm: Tiện ích */}
+        {canSee("qr") && (
           <div className="space-y-1">
-            <p className="px-3 text-[11px] font-bold text-slate-400 uppercase tracking-wider">Hệ thống</p>
+            <p className="px-3 text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+              Tiện ích
+            </p>
+            <NavLink to="/tao-qr" className={navItemClass}>
+              <div className="flex items-center gap-2.5">
+                <QrCode className="w-4 h-4 shrink-0" />
+                <span>Tạo QR</span>
+              </div>
+            </NavLink>
+          </div>
+        )}
+        {/* Nhóm: Hệ thống */}
+        {(canSee("settings") || canSee("accounts") || canSee("logs")) && (
+          <div className="space-y-1">
+            <p className="px-3 text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+              Hệ thống
+            </p>
 
-            {canSee('settings') && (
+            {canSee("settings") && (
               <NavLink to="/thiet-lap" className={navItemClass}>
                 <div className="flex items-center gap-2.5">
                   <Sparkles className="w-4 h-4 shrink-0 text-amber-500" />
@@ -239,7 +304,7 @@ export const Sidebar: React.FC = () => {
               </NavLink>
             )}
 
-            {canSee('settings') && (
+            {canSee("settings") && (
               <NavLink to="/cau-hinh" className={navItemClass}>
                 <div className="flex items-center gap-2.5">
                   <Sliders className="w-4 h-4 shrink-0" />
@@ -248,7 +313,7 @@ export const Sidebar: React.FC = () => {
               </NavLink>
             )}
 
-            {canSee('accounts') && (
+            {canSee("accounts") && (
               <NavLink to="/tai-khoan" className={navItemClass}>
                 <div className="flex items-center gap-2.5">
                   <ShieldCheck className="w-4 h-4 shrink-0" />
@@ -257,7 +322,7 @@ export const Sidebar: React.FC = () => {
               </NavLink>
             )}
 
-            {canSee('logs') && (
+            {canSee("logs") && (
               <NavLink to="/nhat-ky" className={navItemClass}>
                 <div className="flex items-center gap-2.5">
                   <History className="w-4 h-4 shrink-0" />
@@ -269,7 +334,7 @@ export const Sidebar: React.FC = () => {
         )}
 
         {/* Hồ sơ của tôi + Sổ tay */}
-        {canSee('profile') && (
+        {canSee("profile") && (
           <div className="space-y-1">
             <NavLink to="/ho-so" className={navItemClass}>
               <div className="flex items-center gap-2.5">
@@ -277,7 +342,7 @@ export const Sidebar: React.FC = () => {
                 <span>Hồ sơ của tôi</span>
               </div>
             </NavLink>
-            {canSee('journal') && (
+            {canSee("journal") && (
               <NavLink to="/so-tay" className={navItemClass}>
                 <div className="flex items-center gap-2.5">
                   <BookOpen className="w-4 h-4 shrink-0" />
@@ -292,12 +357,16 @@ export const Sidebar: React.FC = () => {
       {/* Footer Info Box */}
       <div className="mt-auto pt-6 border-t border-slate-100">
         <div className="p-3 bg-blue-50/70 border border-blue-100 rounded-xl text-xs text-slate-600">
-          <div className="flex items-center gap-1.5 font-bold text-[#1F5FBF]">
+          <div className="flex items-center gap-1.5 font-bold text-doan">
             <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
             Hệ thống cấp Xã
           </div>
-          <p className="mt-1 text-[11px] text-slate-500">Xã Hòa Bình, tỉnh Cà Mau</p>
-          <p className="text-[10px] text-slate-400 mt-0.5">{units.length} Chi đoàn • {totalMembers} Đoàn viên</p>
+          <p className="mt-1 text-[11px] text-slate-500">
+            Xã Hòa Bình, tỉnh Cà Mau
+          </p>
+          <p className="text-[10px] text-slate-400 mt-0.5">
+            {units.length} Chi đoàn • {totalMembers} Đoàn viên
+          </p>
         </div>
       </div>
     </aside>

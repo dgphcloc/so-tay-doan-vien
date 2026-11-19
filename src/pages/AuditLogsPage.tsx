@@ -1,5 +1,5 @@
-import React, { useState, useMemo } from 'react';
-import { useApp } from '../context/AppContext';
+import React, { useState, useMemo } from "react";
+import { useApp } from "../context/AppContext";
 import {
   History,
   Calendar,
@@ -11,70 +11,89 @@ import {
   CheckCircle2,
   XCircle,
   FileSpreadsheet,
-} from 'lucide-react';
-import { formatDateTimeVN } from '../mock/data';
-import { exportExcel } from '../utils/exportExcel';
+} from "lucide-react";
+import { formatDateTimeVN } from "../mock/data";
+import { exportExcel } from "../utils/exportExcel";
 
 export const AuditLogsPage: React.FC = () => {
   const { auditLogs, members, showToast } = useApp();
 
-  const [search, setSearch] = useState('');
-  const [actionFilter, setActionFilter] = useState<string>('all');
-  const [actorFilter, setActorFilter] = useState<string>('all');
+  const [search, setSearch] = useState("");
+  const [actionFilter, setActionFilter] = useState<string>("all");
+  const [actorFilter, setActorFilter] = useState<string>("all");
 
   const filteredLogs = useMemo(() => {
-    return auditLogs.filter(log => {
+    return auditLogs.filter((log) => {
       // Search in action, table_name, new_value
       if (search.trim()) {
         const query = search.toLowerCase();
         const matchAction = log.action.toLowerCase().includes(query);
         const matchTable = log.table_name.toLowerCase().includes(query);
-        const matchValue = (log.new_value || '').toLowerCase().includes(query);
+        const matchValue = (log.new_value || "").toLowerCase().includes(query);
         if (!matchAction && !matchTable && !matchValue) return false;
       }
 
       // Action Filter
-      if (actionFilter !== 'all') {
-        if (actionFilter === 'approve' && !log.action.toLowerCase().includes('duyệt')) return false;
-        if (actionFilter === 'reject' && !log.action.toLowerCase().includes('từ chối')) return false;
-        if (actionFilter === 'create' && !log.action.toLowerCase().includes('tạo') && !log.action.toLowerCase().includes('thêm')) return false;
-        if (actionFilter === 'update' && !log.action.toLowerCase().includes('cập nhật') && !log.action.toLowerCase().includes('sửa')) return false;
+      if (actionFilter !== "all") {
+        if (
+          actionFilter === "approve" &&
+          !log.action.toLowerCase().includes("duyệt")
+        )
+          return false;
+        if (
+          actionFilter === "reject" &&
+          !log.action.toLowerCase().includes("từ chối")
+        )
+          return false;
+        if (
+          actionFilter === "create" &&
+          !log.action.toLowerCase().includes("tạo") &&
+          !log.action.toLowerCase().includes("thêm")
+        )
+          return false;
+        if (
+          actionFilter === "update" &&
+          !log.action.toLowerCase().includes("cập nhật") &&
+          !log.action.toLowerCase().includes("sửa")
+        )
+          return false;
       }
 
       // Actor Filter
-      if (actorFilter !== 'all' && log.actor_id !== actorFilter) return false;
+      if (actorFilter !== "all" && log.actor_id !== actorFilter) return false;
 
       return true;
     });
   }, [auditLogs, search, actionFilter, actorFilter]);
 
   const handleExportLogs = async () => {
-    const rows = filteredLogs.map(log => ({
+    const rows = filteredLogs.map((log) => ({
       time: formatDateTimeVN(log.created_at),
-      actor: members.find(m => m.id === log.actor_id)?.full_name || 'Bí thư Đoàn',
+      actor:
+        members.find((m) => m.id === log.actor_id)?.full_name || "Bí thư Đoàn",
       role: log.actor_role,
       action: log.action,
       table: log.table_name,
-      detail: log.new_value || '',
+      detail: log.new_value || "",
     }));
     await exportExcel({
       fileName: `Nhat_ky_he_thong_${new Date().toISOString().slice(0, 10)}.xlsx`,
-      sheetName: 'Nhật ký',
-      title: 'NHẬT KÝ THAO TÁC HỆ THỐNG',
+      sheetName: "Nhật ký",
+      title: "NHẬT KÝ THAO TÁC HỆ THỐNG",
       columns: [
-        { header: 'Thời gian', key: 'time', width: 18 },
-        { header: 'Người thực hiện', key: 'actor', width: 22 },
-        { header: 'Vai trò', key: 'role', width: 14 },
-        { header: 'Hành động', key: 'action', width: 26 },
-        { header: 'Bảng dữ liệu', key: 'table', width: 20 },
-        { header: 'Chi tiết thay đổi', key: 'detail', width: 50 },
+        { header: "Thời gian", key: "time", width: 18 },
+        { header: "Người thực hiện", key: "actor", width: 22 },
+        { header: "Vai trò", key: "role", width: 14 },
+        { header: "Hành động", key: "action", width: 26 },
+        { header: "Bảng dữ liệu", key: "table", width: 20 },
+        { header: "Chi tiết thay đổi", key: "detail", width: 50 },
       ],
       rows,
     });
     showToast({
-      title: 'Đã xuất nhật ký',
+      title: "Đã xuất nhật ký",
       description: `${filteredLogs.length} dòng theo bộ lọc hiện tại.`,
-      type: 'success',
+      type: "success",
     });
   };
 
@@ -84,15 +103,17 @@ export const AuditLogsPage: React.FC = () => {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-200">
         <div>
           <h1 className="text-xl md:text-2xl font-bold text-slate-900 tracking-tight flex items-center gap-2.5">
-            <History className="w-6 h-6 text-[#1F5FBF]" />
+            <History className="w-6 h-6 text-doan" />
             Nhật ký Thao tác Hệ thống (Audit Logs)
           </h1>
           <p className="text-xs md:text-sm text-slate-500 mt-0.5">
-            Theo dõi chi tiết mọi thay đổi dữ liệu, hành động duyệt, từ chối và quản trị của cán bộ
+            Theo dõi chi tiết mọi thay đổi dữ liệu, hành động duyệt, từ chối và
+            quản trị của cán bộ
           </p>
         </div>
 
-        <button title="Xuất nhật ký (Excel)"
+        <button
+          title="Xuất nhật ký (Excel)"
           type="button"
           onClick={handleExportLogs}
           className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 rounded-lg shadow-2xs transition-all cursor-pointer"
@@ -108,9 +129,9 @@ export const AuditLogsPage: React.FC = () => {
           <input
             type="text"
             value={search}
-            onChange={e => setSearch(e.target.value)}
+            onChange={(e) => setSearch(e.target.value)}
             placeholder="Tìm theo nội dung thay đổi, hành động, bảng dữ liệu..."
-            className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:border-[#1F5FBF]"
+            className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-300 rounded-lg focus:outline-none focus:border-doan"
           />
         </div>
 
@@ -118,7 +139,7 @@ export const AuditLogsPage: React.FC = () => {
           {/* Lọc hành động */}
           <select
             value={actionFilter}
-            onChange={e => setActionFilter(e.target.value)}
+            onChange={(e) => setActionFilter(e.target.value)}
             className="p-2 bg-slate-50 border border-slate-300 rounded-lg text-slate-700 font-medium"
           >
             <option value="all">Mọi loại hành động</option>
@@ -131,11 +152,11 @@ export const AuditLogsPage: React.FC = () => {
           {/* Lọc người thực hiện */}
           <select
             value={actorFilter}
-            onChange={e => setActorFilter(e.target.value)}
+            onChange={(e) => setActorFilter(e.target.value)}
             className="p-2 bg-slate-50 border border-slate-300 rounded-lg text-slate-700 font-medium"
           >
             <option value="all">Mọi cán bộ thực hiện</option>
-            {members.slice(0, 15).map(m => (
+            {members.slice(0, 15).map((m) => (
               <option key={m.id} value={m.id}>
                 {m.full_name}
               </option>
@@ -161,25 +182,29 @@ export const AuditLogsPage: React.FC = () => {
               {filteredLogs.length === 0 ? (
                 <tr>
                   <td colSpan={5} className="p-8 text-center text-slate-400">
-                    Không tìm thấy bản ghi nhật ký nào phù hợp với bộ lọc tìm kiếm.
+                    Không tìm thấy bản ghi nhật ký nào phù hợp với bộ lọc tìm
+                    kiếm.
                   </td>
                 </tr>
               ) : (
-                filteredLogs.map(log => {
-                  const actor = members.find(m => m.id === log.actor_id);
-                  const isApprove = log.action.toLowerCase().includes('duyệt');
-                  const isReject = log.action.toLowerCase().includes('từ chối');
+                filteredLogs.map((log) => {
+                  const actor = members.find((m) => m.id === log.actor_id);
+                  const isApprove = log.action.toLowerCase().includes("duyệt");
+                  const isReject = log.action.toLowerCase().includes("từ chối");
 
                   return (
-                    <tr key={log.id} className="hover:bg-slate-50 transition-colors">
+                    <tr
+                      key={log.id}
+                      className="hover:bg-slate-50 transition-colors"
+                    >
                       <td className="p-3.5 text-slate-500 font-mono text-[11px] whitespace-nowrap">
                         {formatDateTimeVN(log.created_at)}
                       </td>
 
                       <td className="p-3.5 font-bold text-slate-900 whitespace-nowrap">
                         <div>
-                          <span>{actor?.full_name || 'Bí thư Đoàn'}</span>
-                          <span className="block text-[10px] text-[#1F5FBF] font-mono font-normal">
+                          <span>{actor?.full_name || "Bí thư Đoàn"}</span>
+                          <span className="block text-[10px] text-doan font-mono font-normal">
                             vai trò: {log.actor_role}
                           </span>
                         </div>
@@ -189,10 +214,10 @@ export const AuditLogsPage: React.FC = () => {
                         <span
                           className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full font-bold text-[11px] ${
                             isApprove
-                              ? 'bg-emerald-100 text-emerald-800'
+                              ? "bg-emerald-100 text-emerald-800"
                               : isReject
-                              ? 'bg-red-100 text-red-800'
-                              : 'bg-blue-100 text-[#1F5FBF]'
+                                ? "bg-red-100 text-red-800"
+                                : "bg-blue-100 text-doan"
                           }`}
                         >
                           {log.action}
@@ -206,7 +231,10 @@ export const AuditLogsPage: React.FC = () => {
                       </td>
 
                       <td className="p-3.5 text-slate-700 max-w-md font-mono text-[11px]">
-                        <div className="line-clamp-2" title={log.new_value || ''}>
+                        <div
+                          className="line-clamp-2"
+                          title={log.new_value || ""}
+                        >
                           {log.new_value}
                         </div>
                       </td>
